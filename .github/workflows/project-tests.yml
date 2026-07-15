@@ -10,6 +10,10 @@ on:
 jobs:
   project-tests:
     runs-on: ubuntu-latest
+    env:
+      UV_PROJECT_ENVIRONMENT: /home/runner/.local/venvs/impersonate-proxy
+      UV_CACHE_DIR: /tmp/.uv-cache-impersonate-proxy
+      UV_LINK_MODE: copy
     strategy:
       matrix:
         python-version: ["3.12", "3.13", "3.14"]
@@ -28,29 +32,13 @@ jobs:
           enable-cache: true
 
       - name: Sync dependencies
-        run: |
-          UV_PROJECT_ENVIRONMENT=${HOME}/.local/venvs/impersonate-proxy \
-          UV_CACHE_DIR=/tmp/.uv-cache-impersonate-proxy \
-          UV_LINK_MODE=copy \
-          uv sync --extra dev
+        run: uv sync --extra dev
 
       - name: Lint and Format check
-        run: |
-          UV_PROJECT_ENVIRONMENT=${HOME}/.local/venvs/impersonate-proxy \
-          UV_CACHE_DIR=/tmp/.uv-cache-impersonate-proxy \
-          UV_LINK_MODE=copy \
-          uv run ruff check src tests && uv run ruff format --check src tests
+        run: uv run ruff check src tests && uv run ruff format --check src tests
 
       - name: Run tests
-        run: |
-          UV_PROJECT_ENVIRONMENT=${HOME}/.local/venvs/impersonate-proxy \
-          UV_CACHE_DIR=/tmp/.uv-cache-impersonate-proxy \
-          UV_LINK_MODE=copy \
-          uv run pytest tests/ -v
+        run: uv run pytest tests/ -v
 
       - name: Verify CLI
-        run: |
-          UV_PROJECT_ENVIRONMENT=${HOME}/.local/venvs/impersonate-proxy \
-          UV_CACHE_DIR=/tmp/.uv-cache-impersonate-proxy \
-          UV_LINK_MODE=copy \
-          uv run impersonate-proxy --help
+        run: uv run impersonate-proxy --help
