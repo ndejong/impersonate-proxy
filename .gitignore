@@ -9,3 +9,4 @@ venv
 _dev/
 .idea/
 build/
+dist/

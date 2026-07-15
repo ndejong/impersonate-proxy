@@ -6,6 +6,9 @@ build-backend = "setuptools.build_meta"
 package-dir = {"" = "src"}
 packages = ["impersonate_proxy"]
 
+[tool.setuptools.dynamic]
+version = {attr = "impersonate_proxy.__version__"}
+
 
 [project]
 name = "impersonate-proxy"
