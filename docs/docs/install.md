@@ -12,12 +12,12 @@
 
 ### Install via git
 ```bash
-pip install git+https://github.com/ndejong/impersonate-proxy.git
+pip install git+https://github.com/psaintelligence/impersonate-proxy.git
 ```
 
 Or using [uv](https://github.com/astral-sh/uv):
 ```bash
-uv pip install git+https://github.com/ndejong/impersonate-proxy.git
+uv pip install git+https://github.com/psaintelligence/impersonate-proxy.git
 ```
 
 ---

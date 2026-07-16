@@ -16,8 +16,8 @@ site_description: HTTP/HTTPS proxy that impersonates browser TLS fingerprints (J
 
 # Repo
 # ===
-repo_url: https://github.com/ndejong/impersonate-proxy
-repo_name: ndejong/impersonate-proxy
+repo_url: https://github.com/psaintelligence/impersonate-proxy
+repo_name: psaintelligence/impersonate-proxy
 
 
 # Copyright
@@ -52,7 +52,7 @@ theme:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/ndejong/impersonate-proxy
+      link: https://github.com/psaintelligence/impersonate-proxy
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/impersonate-proxy/
 

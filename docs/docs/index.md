@@ -20,7 +20,7 @@ Spin up the proxy container in one line:
 ```bash
 docker run --rm -p 8899:8899 \
   -v impersonate-proxy-ca-certs:/root/.config/impersonate-proxy \
-  ghcr.io/ndejong/impersonate-proxy:latest
+  ghcr.io/psaintelligence/impersonate-proxy:latest
 ```
 
 Once started, configure your client to use the proxy:
@@ -55,4 +55,4 @@ curl -x http://127.0.0.1:8899 https://cloudflare.com
 ---
 
 !!! note "Fork Attribution"
-    This project is a fork of the original source project [hauxir/tls-impersonate-proxy](https://github.com/hauxir/tls-impersonate-proxy) maintained at [ndejong/impersonate-proxy](https://github.com/ndejong/impersonate-proxy).
+    This project is a fork of the original source project [hauxir/tls-impersonate-proxy](https://github.com/hauxir/tls-impersonate-proxy) maintained at [psaintelligence/impersonate-proxy](https://github.com/psaintelligence/impersonate-proxy).

@@ -1,7 +1,7 @@
 # impersonate-proxy
 
 > [!NOTE]
-> This project is a fork of the original source project [hauxir/tls-impersonate-proxy](https://github.com/hauxir/tls-impersonate-proxy) maintained at [ndejong/impersonate-proxy](https://github.com/ndejong/impersonate-proxy).
+> This project is a fork of the original source project [hauxir/tls-impersonate-proxy](https://github.com/hauxir/tls-impersonate-proxy) maintained at [psaintelligence/impersonate-proxy](https://github.com/psaintelligence/impersonate-proxy).
 
 HTTP/HTTPS proxy that impersonates browser TLS fingerprints using [curl_cffi](https://github.com/lexiforest/curl_cffi). Defeats JA3/JA4 TLS fingerprinting used by CDNs to block non-browser clients.
 
@@ -17,13 +17,13 @@ Many CDNs use TLS fingerprinting (JA3/JA4) to distinguish real browsers from too
 ## Install
 
 ```bash
-pip install git+https://github.com/ndejong/impersonate-proxy.git
+pip install git+https://github.com/psaintelligence/impersonate-proxy.git
 ```
 
 Or with [uv](https://github.com/astral-sh/uv):
 
 ```bash
-uv pip install git+https://github.com/ndejong/impersonate-proxy.git
+uv pip install git+https://github.com/psaintelligence/impersonate-proxy.git
 ```
 
 ---
