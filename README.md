@@ -40,10 +40,10 @@ curl -x http://127.0.0.1:8899 https://cloudflare.com
 Install and start the proxy locally:
 
 ```bash
-# Install via pip
-pip install git+https://github.com/psaintelligence/impersonate-proxy.git
+# Install via pipx from pypi
+pipx install impersonate-proxy
 
-# Or install via uv
+# Or install via uv from source
 uv pip install git+https://github.com/psaintelligence/impersonate-proxy.git
 
 # Start the proxy (default: 127.0.0.1:8899)
