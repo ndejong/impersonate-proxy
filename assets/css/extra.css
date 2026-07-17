@@ -1,0 +1,31 @@
+
+@keyframes heart-pulse {
+  0%, 40%, 80%, 100% { transform: scale(1); }
+  20%, 60% { transform: scale(1.15); }
+}
+.heart {
+  animation: heart-pulse 1000ms infinite;
+  color: red;
+}
+
+.gitlab {
+  color: #fc6d26;
+}
+
+.md-copyright__highlight::after {
+  content: "";
+  display: inline-block;
+  background-image: url("../img/psa-intelligence-logo-256w.png");
+  background-size: contain;
+  background-repeat: no-repeat;
+  width: 140px;
+  height: 24px;
+  margin-left: 15px;
+  vertical-align: middle;
+  opacity: 0.9;
+  transition: opacity 0.25s ease;
+}
+
+.md-copyright__highlight:hover::after {
+  opacity: 1.0;
+}
