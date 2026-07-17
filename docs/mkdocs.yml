@@ -13,7 +13,7 @@ nav:
 # ===
 docs_dir: docs
 site_name: PSA Intelligence Impersonate Proxy
-site_url: https://ndejong.github.io/impersonate-proxy/
+site_url: https://psaintelligence.github.io/impersonate-proxy/
 site_author: ndejong
 site_description: HTTP/HTTPS proxy that impersonates browser TLS fingerprints (JA3/JA4) using curl_cffi
 

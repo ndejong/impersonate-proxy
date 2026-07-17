@@ -54,8 +54,8 @@ impersonate-proxy
 
 ## Documentation
 
-Full guides and configuration details are available at **[ndejong.github.io/impersonate-proxy](https://ndejong.github.io/impersonate-proxy/)**.
+Full guides and configuration details are available at **[psaintelligence.github.io/impersonate-proxy](https://psaintelligence.github.io/impersonate-proxy/)**.
 
-- **[Installation Guide](https://ndejong.github.io/impersonate-proxy/install/)**: Setup, CLI arguments, and Docker.
-- **[How It Works](https://ndejong.github.io/impersonate-proxy/workflow/)**: Detailed information about TLS impersonation and HTTPS decryption.
-- **[Development Guide](https://ndejong.github.io/impersonate-proxy/install/#development)**: Building, running benchmarks, and tests.
+- **[Installation Guide](https://psaintelligence.github.io/impersonate-proxy/install/)**: Setup, CLI arguments, and Docker.
+- **[How It Works](https://psaintelligence.github.io/impersonate-proxy/workflow/)**: Detailed information about TLS impersonation and HTTPS decryption.
+- **[Development Guide](https://psaintelligence.github.io/impersonate-proxy/install/#development)**: Building, running benchmarks, and tests.
