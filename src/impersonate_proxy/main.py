@@ -27,6 +27,7 @@ import argparse
 import contextlib
 import datetime
 import http.client
+import importlib.metadata
 import ipaddress
 import logging
 import os
@@ -702,9 +703,15 @@ def run(
         daemon_threads = True
 
     server = ThreadingHTTPServer((host, port), ProxyHandler)
+    try:
+        curl_cffi_version = importlib.metadata.version("curl_cffi")
+    except importlib.metadata.PackageNotFoundError:
+        curl_cffi_version = "unknown"
+
     logger.info(
         f"impersonate-proxy listening on {host}:{port} "
-        f"(impersonating {impersonate}, enrich_headers={enrich_headers}, debug={debug})"
+        f"(impersonating {impersonate}, enrich_headers={enrich_headers}, debug={debug}, "
+        f"curl_cffi={curl_cffi_version})"
     )
     try:
         server.serve_forever()
