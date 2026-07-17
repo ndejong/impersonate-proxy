@@ -9,9 +9,10 @@
 HTTP/HTTPS proxy that impersonates browser TLS fingerprints using [curl_cffi](https://github.com/lexiforest/curl_cffi) that can be effective in avoiding blocks against non-browser clients.
 
 > [!NOTE]
-> This project started as a fork of [hauxir/tls-impersonate-proxy](https://github.com/hauxir/tls-impersonate-proxy) and has now evolved beyond a pull request to merge.  The impersonate-proxy project is maintained at [psaintelligence/impersonate-proxy](https://github.com/psaintelligence/impersonate-proxy).
+> This project started as a fork of [hauxir/tls-impersonate-proxy](https://github.com/hauxir/tls-impersonate-proxy) and has now evolved beyond a pull request to merge.  This **impersonate-proxy** project is maintained at [psaintelligence/impersonate-proxy](https://github.com/psaintelligence/impersonate-proxy).
 
 Pypi: [pypi.org/project/impersonate-proxy](https://pypi.org/project/impersonate-proxy/)
+
 GHCR: [github.com/psaintelligence/impersonate-proxy/pkgs/container](https://github.com/psaintelligence/impersonate-proxy/pkgs/container/impersonate-proxy)
 
 ---
