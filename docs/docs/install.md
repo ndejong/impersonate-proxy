@@ -58,21 +58,31 @@ volumes:
 Run `impersonate-proxy --help` to view all available parameters:
 
 ```text
-usage: impersonate-proxy [-h] [--port PORT] [--host HOST] [--impersonate IMPERSONATE]
-                         [--ca-dir CA_DIR] [--no-enrich-headers] [--debug]
+usage: python3 -m impersonate_proxy.main [-h] [--port PORT] [--host HOST]
+                                         [--impersonate IMPERSONATE]
+                                         [--no-enrich-headers] [--ca-dir CA_DIR]
+                                         [--debug] [--quiet]
 
 HTTP/HTTPS proxy that impersonates browser TLS fingerprints
 
 options:
   -h, --help            show this help message and exit
-  --port PORT, -p PORT  Port to listen on (default: 8899 or IMPERSONATE_PROXY_PORT)
-  --host HOST, -H HOST  Host to bind to (default: 127.0.0.1 or IMPERSONATE_PROXY_HOST)
-  --impersonate IMPERSONATE, -i IMPERSONATE
-                        Browser to impersonate (chrome, firefox, etc. Default: chrome or IMPERSONATE_PROXY_IMPERSONATE)
-  --ca-dir CA_DIR, -c CA_DIR
-                        Directory to store/load CA certificate and key (default: ~/.config/impersonate-proxy or IMPERSONATE_PROXY_CA_DIR)
-  --no-enrich-headers   Disable automatic browser header enrichment (User-Agent, Sec-Fetch-*, etc.) or IMPERSONATE_PROXY_ENRICH_HEADERS=false
-  --debug, -d           Enable verbose debug logging (unredacts URLs/hosts in logs) or IMPERSONATE_PROXY_DEBUG=true
+  --port, -p PORT       Port to listen on (default: 8899 or
+                        IMPERSONATE_PROXY_PORT)
+  --host, -H HOST       Host to bind to (default: 127.0.0.1 or
+                        IMPERSONATE_PROXY_HOST)
+  --impersonate, -i IMPERSONATE
+                        Browser to impersonate (chrome, firefox, etc. Default:
+                        chrome or IMPERSONATE_PROXY_IMPERSONATE)
+  --no-enrich-headers   Disable automatic browser header enrichment (User-Agent,
+                        Sec-Fetch-*, etc.) or
+                        IMPERSONATE_PROXY_ENRICH_HEADERS=false
+  --ca-dir, -c CA_DIR   Directory to store/load CA certificate and key (default:
+                        ~/.config/impersonate-proxy or IMPERSONATE_PROXY_CA_DIR)
+  --debug, -d           Enable verbose debug logging (unredacts URLs/hosts in
+                        logs) or IMPERSONATE_PROXY_DEBUG=true
+  --quiet, -q           Disable logging of request traffic or
+                        IMPERSONATE_PROXY_QUIET=true
 ```
 
 ---
@@ -85,8 +95,10 @@ To allow client applications to perform HTTPS requests through the proxy without
 2. **Set Environment Variables**: Many tools (like `curl`, `wget`, `python-requests`, `httpx`) respect specific environment variables for trust stores:
 
 ```bash
-# Set CA trust path for curl/python
+# Set CA trust path for curl
 export SSL_CERT_FILE=~/.config/impersonate-proxy/ca.crt
+
+# Set CA trust path for python-requests
 export REQUESTS_CA_BUNDLE=~/.config/impersonate-proxy/ca.crt
 
 # Test HTTPS request through the proxy
