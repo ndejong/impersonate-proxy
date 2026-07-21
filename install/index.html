@@ -24,30 +24,45 @@
 </span><span id=__span-2-13><a id=__codelineno-2-13 name=__codelineno-2-13 href=#__codelineno-2-13></a><span class=w>  </span><span class=nt>impersonate-proxy-ca-certs</span><span class=p>:</span>
 </span></code></pre></div></p> <hr> <h2 id=command-line-interface-cli>Command Line Interface (CLI)<a class=headerlink href=#command-line-interface-cli title="Permanent link">&para;</a></h2> <p>Run <code>impersonate-proxy --help</code> to view all available parameters:</p> <div class="language-text highlight"><pre><span></span><code><span id=__span-3-1><a id=__codelineno-3-1 name=__codelineno-3-1 href=#__codelineno-3-1></a>usage: python3 -m impersonate_proxy.main [-h] [--port PORT] [--host HOST]
 </span><span id=__span-3-2><a id=__codelineno-3-2 name=__codelineno-3-2 href=#__codelineno-3-2></a>                                         [--impersonate IMPERSONATE]
-</span><span id=__span-3-3><a id=__codelineno-3-3 name=__codelineno-3-3 href=#__codelineno-3-3></a>                                         [--no-enrich-headers] [--ca-dir CA_DIR]
-</span><span id=__span-3-4><a id=__codelineno-3-4 name=__codelineno-3-4 href=#__codelineno-3-4></a>                                         [--debug] [--quiet]
-</span><span id=__span-3-5><a id=__codelineno-3-5 name=__codelineno-3-5 href=#__codelineno-3-5></a>
-</span><span id=__span-3-6><a id=__codelineno-3-6 name=__codelineno-3-6 href=#__codelineno-3-6></a>HTTP/HTTPS proxy that impersonates browser TLS fingerprints
-</span><span id=__span-3-7><a id=__codelineno-3-7 name=__codelineno-3-7 href=#__codelineno-3-7></a>
-</span><span id=__span-3-8><a id=__codelineno-3-8 name=__codelineno-3-8 href=#__codelineno-3-8></a>options:
-</span><span id=__span-3-9><a id=__codelineno-3-9 name=__codelineno-3-9 href=#__codelineno-3-9></a>  -h, --help            show this help message and exit
-</span><span id=__span-3-10><a id=__codelineno-3-10 name=__codelineno-3-10 href=#__codelineno-3-10></a>  --port, -p PORT       Port to listen on (default: 8899 or
-</span><span id=__span-3-11><a id=__codelineno-3-11 name=__codelineno-3-11 href=#__codelineno-3-11></a>                        IMPERSONATE_PROXY_PORT)
-</span><span id=__span-3-12><a id=__codelineno-3-12 name=__codelineno-3-12 href=#__codelineno-3-12></a>  --host, -H HOST       Host to bind to (default: 127.0.0.1 or
-</span><span id=__span-3-13><a id=__codelineno-3-13 name=__codelineno-3-13 href=#__codelineno-3-13></a>                        IMPERSONATE_PROXY_HOST)
-</span><span id=__span-3-14><a id=__codelineno-3-14 name=__codelineno-3-14 href=#__codelineno-3-14></a>  --impersonate, -i IMPERSONATE
-</span><span id=__span-3-15><a id=__codelineno-3-15 name=__codelineno-3-15 href=#__codelineno-3-15></a>                        Browser to impersonate (chrome, firefox, etc. Default:
-</span><span id=__span-3-16><a id=__codelineno-3-16 name=__codelineno-3-16 href=#__codelineno-3-16></a>                        chrome or IMPERSONATE_PROXY_IMPERSONATE)
-</span><span id=__span-3-17><a id=__codelineno-3-17 name=__codelineno-3-17 href=#__codelineno-3-17></a>  --no-enrich-headers   Disable automatic browser header enrichment (User-Agent,
-</span><span id=__span-3-18><a id=__codelineno-3-18 name=__codelineno-3-18 href=#__codelineno-3-18></a>                        Sec-Fetch-*, etc.) or
-</span><span id=__span-3-19><a id=__codelineno-3-19 name=__codelineno-3-19 href=#__codelineno-3-19></a>                        IMPERSONATE_PROXY_ENRICH_HEADERS=false
-</span><span id=__span-3-20><a id=__codelineno-3-20 name=__codelineno-3-20 href=#__codelineno-3-20></a>  --ca-dir, -c CA_DIR   Directory to store/load CA certificate and key (default:
-</span><span id=__span-3-21><a id=__codelineno-3-21 name=__codelineno-3-21 href=#__codelineno-3-21></a>                        ~/.config/impersonate-proxy or IMPERSONATE_PROXY_CA_DIR)
-</span><span id=__span-3-22><a id=__codelineno-3-22 name=__codelineno-3-22 href=#__codelineno-3-22></a>  --debug, -d           Enable verbose debug logging (unredacts URLs/hosts in
-</span><span id=__span-3-23><a id=__codelineno-3-23 name=__codelineno-3-23 href=#__codelineno-3-23></a>                        logs) or IMPERSONATE_PROXY_DEBUG=true
-</span><span id=__span-3-24><a id=__codelineno-3-24 name=__codelineno-3-24 href=#__codelineno-3-24></a>  --quiet, -q           Disable logging of request traffic or
-</span><span id=__span-3-25><a id=__codelineno-3-25 name=__codelineno-3-25 href=#__codelineno-3-25></a>                        IMPERSONATE_PROXY_QUIET=true
-</span></code></pre></div> <hr> <h2 id=trusting-the-root-ca>Trusting the Root CA<a class=headerlink href=#trusting-the-root-ca title="Permanent link">&para;</a></h2> <p>To allow client applications to perform HTTPS requests through the proxy without throwing SSL verification errors:</p> <ol> <li><strong>Locate the Certificate</strong>: By default, the root certificate is created at <code>~/.config/impersonate-proxy/ca.crt</code>.</li> <li><strong>Set Environment Variables</strong>: Many tools (like <code>curl</code>, <code>wget</code>, <code>python-requests</code>, <code>httpx</code>) respect specific environment variables for trust stores:</li> </ol> <div class="language-bash highlight"><pre><span></span><code><span id=__span-4-1><a id=__codelineno-4-1 name=__codelineno-4-1 href=#__codelineno-4-1></a><span class=c1># Set CA trust path for curl</span>
+</span><span id=__span-3-3><a id=__codelineno-3-3 name=__codelineno-3-3 href=#__codelineno-3-3></a>                                         [--passthrough-headers | --enrich-headers | --override-headers]
+</span><span id=__span-3-4><a id=__codelineno-3-4 name=__codelineno-3-4 href=#__codelineno-3-4></a>                                         [--strip-client-leak-headers]
+</span><span id=__span-3-5><a id=__codelineno-3-5 name=__codelineno-3-5 href=#__codelineno-3-5></a>                                         [--ca-dir CA_DIR] [--debug] [--quiet]
+</span><span id=__span-3-6><a id=__codelineno-3-6 name=__codelineno-3-6 href=#__codelineno-3-6></a>
+</span><span id=__span-3-7><a id=__codelineno-3-7 name=__codelineno-3-7 href=#__codelineno-3-7></a>HTTP/HTTPS proxy that impersonates browser TLS fingerprints
+</span><span id=__span-3-8><a id=__codelineno-3-8 name=__codelineno-3-8 href=#__codelineno-3-8></a>
+</span><span id=__span-3-9><a id=__codelineno-3-9 name=__codelineno-3-9 href=#__codelineno-3-9></a>options:
+</span><span id=__span-3-10><a id=__codelineno-3-10 name=__codelineno-3-10 href=#__codelineno-3-10></a>  -h, --help            show this help message and exit
+</span><span id=__span-3-11><a id=__codelineno-3-11 name=__codelineno-3-11 href=#__codelineno-3-11></a>  --port, -p PORT       Port to listen on (default: 8899 or
+</span><span id=__span-3-12><a id=__codelineno-3-12 name=__codelineno-3-12 href=#__codelineno-3-12></a>                        IMPERSONATE_PROXY_PORT)
+</span><span id=__span-3-13><a id=__codelineno-3-13 name=__codelineno-3-13 href=#__codelineno-3-13></a>  --host, -H HOST       Host to bind to (default: 127.0.0.1 or
+</span><span id=__span-3-14><a id=__codelineno-3-14 name=__codelineno-3-14 href=#__codelineno-3-14></a>                        IMPERSONATE_PROXY_HOST)
+</span><span id=__span-3-15><a id=__codelineno-3-15 name=__codelineno-3-15 href=#__codelineno-3-15></a>  --impersonate, -i IMPERSONATE
+</span><span id=__span-3-16><a id=__codelineno-3-16 name=__codelineno-3-16 href=#__codelineno-3-16></a>                        Browser to impersonate (chrome, firefox, etc. Default:
+</span><span id=__span-3-17><a id=__codelineno-3-17 name=__codelineno-3-17 href=#__codelineno-3-17></a>                        chrome or IMPERSONATE_PROXY_IMPERSONATE)
+</span><span id=__span-3-18><a id=__codelineno-3-18 name=__codelineno-3-18 href=#__codelineno-3-18></a>  --passthrough-headers
+</span><span id=__span-3-19><a id=__codelineno-3-19 name=__codelineno-3-19 href=#__codelineno-3-19></a>                        Forward client headers untouched; curl_cffi only sets
+</span><span id=__span-3-20><a id=__codelineno-3-20 name=__codelineno-3-20 href=#__codelineno-3-20></a>                        TLS-impersonation headers. Equivalent to the previous
+</span><span id=__span-3-21><a id=__codelineno-3-21 name=__codelineno-3-21 href=#__codelineno-3-21></a>                        --no-enrich-headers behaviour.
+</span><span id=__span-3-22><a id=__codelineno-3-22 name=__codelineno-3-22 href=#__codelineno-3-22></a>  --enrich-headers      Fill missing browser headers and replace non-browser
+</span><span id=__span-3-23><a id=__codelineno-3-23 name=__codelineno-3-23 href=#__codelineno-3-23></a>                        User-Agents. [DEFAULT]
+</span><span id=__span-3-24><a id=__codelineno-3-24 name=__codelineno-3-24 href=#__codelineno-3-24></a>  --override-headers    Replace the curated browser-header set (Accept, Sec-*,
+</span><span id=__span-3-25><a id=__codelineno-3-25 name=__codelineno-3-25 href=#__codelineno-3-25></a>                        etc.) with the impersonation profile defaults and drop
+</span><span id=__span-3-26><a id=__codelineno-3-26 name=__codelineno-3-26 href=#__codelineno-3-26></a>                        nav-mismatch tells (Cache-Control, DNT, Connection).
+</span><span id=__span-3-27><a id=__codelineno-3-27 name=__codelineno-3-27 href=#__codelineno-3-27></a>                        Use for clients that leak non-browser signals (e.g.
+</span><span id=__span-3-28><a id=__codelineno-3-28 name=__codelineno-3-28 href=#__codelineno-3-28></a>                        SearXNG).
+</span><span id=__span-3-29><a id=__codelineno-3-29 name=__codelineno-3-29 href=#__codelineno-3-29></a>  --strip-client-leak-headers
+</span><span id=__span-3-30><a id=__codelineno-3-30 name=__codelineno-3-30 href=#__codelineno-3-30></a>                        Drop middlebox-chain / tracing leak headers (X-Forwarded-*,
+</span><span id=__span-3-31><a id=__codelineno-3-31 name=__codelineno-3-31 href=#__codelineno-3-31></a>                        Forwarded, Via, X-Request-ID, X-Correlation-ID).
+</span><span id=__span-3-32><a id=__codelineno-3-32 name=__codelineno-3-32 href=#__codelineno-3-32></a>                        CDN-ingress headers (X-Real-IP, True-Client-IP, etc.)
+</span><span id=__span-3-33><a id=__codelineno-3-33 name=__codelineno-3-33 href=#__codelineno-3-33></a>                        are forwarded with a warning when present. Combinable
+</span><span id=__span-3-34><a id=__codelineno-3-34 name=__codelineno-3-34 href=#__codelineno-3-34></a>                        with any header mode.
+</span><span id=__span-3-35><a id=__codelineno-3-35 name=__codelineno-3-35 href=#__codelineno-3-35></a>  --ca-dir, -c CA_DIR   Directory to store/load CA certificate and key (default:
+</span><span id=__span-3-36><a id=__codelineno-3-36 name=__codelineno-3-36 href=#__codelineno-3-36></a>                        ~/.config/impersonate-proxy or IMPERSONATE_PROXY_CA_DIR)
+</span><span id=__span-3-37><a id=__codelineno-3-37 name=__codelineno-3-37 href=#__codelineno-3-37></a>  --debug, -d           Enable verbose debug logging (unredacts URLs/hosts in
+</span><span id=__span-3-38><a id=__codelineno-3-38 name=__codelineno-3-38 href=#__codelineno-3-38></a>                        logs) or IMPERSONATE_PROXY_DEBUG=true
+</span><span id=__span-3-39><a id=__codelineno-3-39 name=__codelineno-3-39 href=#__codelineno-3-39></a>  --quiet, -q           Disable logging of request traffic or
+</span><span id=__span-3-40><a id=__codelineno-3-40 name=__codelineno-3-40 href=#__codelineno-3-40></a>                        IMPERSONATE_PROXY_QUIET=true
+</span></code></pre></div> <p>The three header-mode flags are mutually exclusive. The default mode is <code>--enrich-headers</code>. Equivalent environment variables are <code>IMPERSONATE_PROXY_HEADER_MODE</code> (one of <code>passthrough</code>, <code>enrich</code>, <code>override</code>) and <code>IMPERSONATE_PROXY_STRIP_CLIENT_LEAK_HEADERS</code> (boolean).</p> <hr> <h2 id=trusting-the-root-ca>Trusting the Root CA<a class=headerlink href=#trusting-the-root-ca title="Permanent link">&para;</a></h2> <p>To allow client applications to perform HTTPS requests through the proxy without throwing SSL verification errors:</p> <ol> <li><strong>Locate the Certificate</strong>: By default, the root certificate is created at <code>~/.config/impersonate-proxy/ca.crt</code>.</li> <li><strong>Set Environment Variables</strong>: Many tools (like <code>curl</code>, <code>wget</code>, <code>python-requests</code>, <code>httpx</code>) respect specific environment variables for trust stores:</li> </ol> <div class="language-bash highlight"><pre><span></span><code><span id=__span-4-1><a id=__codelineno-4-1 name=__codelineno-4-1 href=#__codelineno-4-1></a><span class=c1># Set CA trust path for curl</span>
 </span><span id=__span-4-2><a id=__codelineno-4-2 name=__codelineno-4-2 href=#__codelineno-4-2></a><span class=nb>export</span><span class=w> </span><span class=nv>SSL_CERT_FILE</span><span class=o>=</span>~/.config/impersonate-proxy/ca.crt
 </span><span id=__span-4-3><a id=__codelineno-4-3 name=__codelineno-4-3 href=#__codelineno-4-3></a>
 </span><span id=__span-4-4><a id=__codelineno-4-4 name=__codelineno-4-4 href=#__codelineno-4-4></a><span class=c1># Set CA trust path for python-requests</span>
