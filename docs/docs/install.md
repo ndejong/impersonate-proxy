@@ -60,8 +60,9 @@ Run `impersonate-proxy --help` to view all available parameters:
 ```text
 usage: python3 -m impersonate_proxy.main [-h] [--port PORT] [--host HOST]
                                          [--impersonate IMPERSONATE]
-                                         [--no-enrich-headers] [--ca-dir CA_DIR]
-                                         [--debug] [--quiet]
+                                         [--passthrough-headers | --enrich-headers | --override-headers]
+                                         [--strip-client-leak-headers]
+                                         [--ca-dir CA_DIR] [--debug] [--quiet]
 
 HTTP/HTTPS proxy that impersonates browser TLS fingerprints
 
@@ -74,9 +75,23 @@ options:
   --impersonate, -i IMPERSONATE
                         Browser to impersonate (chrome, firefox, etc. Default:
                         chrome or IMPERSONATE_PROXY_IMPERSONATE)
-  --no-enrich-headers   Disable automatic browser header enrichment (User-Agent,
-                        Sec-Fetch-*, etc.) or
-                        IMPERSONATE_PROXY_ENRICH_HEADERS=false
+  --passthrough-headers
+                        Forward client headers untouched; curl_cffi only sets
+                        TLS-impersonation headers. Equivalent to the previous
+                        --no-enrich-headers behaviour.
+  --enrich-headers      Fill missing browser headers and replace non-browser
+                        User-Agents. [DEFAULT]
+  --override-headers    Replace the curated browser-header set (Accept, Sec-*,
+                        etc.) with the impersonation profile defaults and drop
+                        nav-mismatch tells (Cache-Control, DNT, Connection).
+                        Use for clients that leak non-browser signals (e.g.
+                        SearXNG).
+  --strip-client-leak-headers
+                        Drop middlebox-chain / tracing leak headers (X-Forwarded-*,
+                        Forwarded, Via, X-Request-ID, X-Correlation-ID).
+                        CDN-ingress headers (X-Real-IP, True-Client-IP, etc.)
+                        are forwarded with a warning when present. Combinable
+                        with any header mode.
   --ca-dir, -c CA_DIR   Directory to store/load CA certificate and key (default:
                         ~/.config/impersonate-proxy or IMPERSONATE_PROXY_CA_DIR)
   --debug, -d           Enable verbose debug logging (unredacts URLs/hosts in
@@ -84,6 +99,11 @@ options:
   --quiet, -q           Disable logging of request traffic or
                         IMPERSONATE_PROXY_QUIET=true
 ```
+
+The three header-mode flags are mutually exclusive. The default mode is
+`--enrich-headers`. Equivalent environment variables are
+`IMPERSONATE_PROXY_HEADER_MODE` (one of `passthrough`, `enrich`, `override`) and
+`IMPERSONATE_PROXY_STRIP_CLIENT_LEAK_HEADERS` (boolean).
 
 ---
 

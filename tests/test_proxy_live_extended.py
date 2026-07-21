@@ -45,17 +45,34 @@ class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 
-@pytest.fixture(params=["chrome", "firefox"])
-def proxy_server(request) -> Generator[tuple[str, str, str], None, None]:
+@pytest.fixture(
+    params=[
+        # Each param tuple: (impersonate, header_mode, strip_leak_headers)
+        ("chrome", "enrich", False),
+        ("firefox", "enrich", False),
+        ("chrome", "override", True),
+        ("firefox", "override", True),
+    ],
+    ids=["chrome-enrich", "firefox-enrich", "chrome-override+strip", "firefox-override+strip"],
+)
+def proxy_server(request) -> Generator[tuple[str, str, str, str, bool], None, None]:
     """
     Spin up a local tls-impersonate-proxy instance with a temporary CA dir.
 
-    Parameterised to test both Chrome and Firefox TLS impersonation.
-    Yields (proxy_url, ca_cert_path, impersonate_profile).
+    Parameterised across:
+      * impersonation profile (chrome, firefox)
+      * header mode (enrich, override)
+      * client-leak stripping (only enabled for the override variants)
+
+    Yields (proxy_url, ca_cert_path, impersonate_profile, header_mode, strip_leak).
     """
-    impersonate_profile = request.param
+    impersonate_profile, header_mode, strip_leak = request.param
     orig_impersonate = proxy._IMPERSONATE
+    orig_header_mode = proxy._HEADER_MODE
+    orig_strip = proxy._STRIP_CLIENT_LEAK_HEADERS
     proxy._IMPERSONATE = impersonate_profile
+    proxy._HEADER_MODE = header_mode
+    proxy._STRIP_CLIENT_LEAK_HEADERS = strip_leak
 
     port = _get_free_port()
     proxy_url = f"http://127.0.0.1:{port}"
@@ -77,9 +94,11 @@ def proxy_server(request) -> Generator[tuple[str, str, str], None, None]:
             time.sleep(0.1)
 
         try:
-            yield proxy_url, ca_cert_path, impersonate_profile
+            yield proxy_url, ca_cert_path, impersonate_profile, header_mode, strip_leak
         finally:
             proxy._IMPERSONATE = orig_impersonate
+            proxy._HEADER_MODE = orig_header_mode
+            proxy._STRIP_CLIENT_LEAK_HEADERS = orig_strip
             server.shutdown()
 
 
@@ -89,18 +108,43 @@ def _get(
     ca_cert_path: str,
     impersonate: str,
     timeout: int = 30,
+    inject_leak_headers: bool = False,
 ) -> requests.Response:
     """
     Issue a GET request through the proxy using standard python-requests headers.
     This emulates a real-world plain client (which does not provide browser headers).
+
+    When ``inject_leak_headers`` is True, simulate a SearXNG/httpx client by adding
+    middlebox/identity-leak headers (X-Forwarded-*, Forwarded, Via, X-Request-ID, etc.)
+    plus navigation-mismatch tells (Cache-Control, DNT, Connection). Used to verify
+    that --override-headers + --strip-client-leak-headers actually strip them.
     """
     scheme = url.split("://")[0]
     proxies = {scheme: proxy_url}
 
+    headers = None
+    if inject_leak_headers:
+        # Mimic SearXNG outgoing request shape.
+        headers = {
+            "User-Agent": "python-httpx/0.27.0",
+            "Accept": "*/*",
+            "Accept-Encoding": "gzip, deflate",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cache-Control": "no-cache",
+            "DNT": "1",
+            "Connection": "keep-alive",
+            "X-Forwarded-For": "10.0.0.1",
+            "X-Forwarded-Host": "internal.example",
+            "Forwarded": "for=10.0.0.1;proto=https",
+            "Via": "1.1 searxng",
+            "X-Request-ID": "test-abc",
+            "X-Correlation-ID": "test-xyz",
+        }
+
     # Only pass verify= for HTTPS; HTTP doesn't need a cert bundle
     if scheme == "https":
-        return requests.get(url, proxies=proxies, verify=ca_cert_path, timeout=timeout)
-    return requests.get(url, proxies=proxies, timeout=timeout)
+        return requests.get(url, proxies=proxies, verify=ca_cert_path, headers=headers, timeout=timeout)
+    return requests.get(url, proxies=proxies, headers=headers, timeout=timeout)
 
 
 def _get_unproxied(url: str, use_chrome_headers: bool = False, timeout: int = 15) -> int:
@@ -127,17 +171,20 @@ def _get_unproxied(url: str, use_chrome_headers: bool = False, timeout: int = 15
         return 0
 
 
-def _assert_status(url: str, proxied_status: int, unproxied_status: int, impersonate: str) -> None:
+def _assert_status(
+    url: str, proxied_status: int, unproxied_status: int, impersonate: str, header_mode: str = ""
+) -> None:
     """
     Assert that the proxied request succeeded, or handle WAF IP blocks robustly.
     """
+    tag = f"{impersonate}/{header_mode}" if header_mode else impersonate
     if proxied_status == 200:
         if unproxied_status in (403, 401, 429, 503, 0):
             logger.info(
-                f"[{url}] SUCCESS ({impersonate}): Direct request was blocked ({unproxied_status}), but proxy successfully bypassed it (200)"
+                f"[{url}] SUCCESS ({tag}): Direct request was blocked ({unproxied_status}), but proxy successfully bypassed it (200)"
             )
         else:
-            logger.info(f"[{url}] SUCCESS ({impersonate}): Both direct and proxied requests succeeded (200)")
+            logger.info(f"[{url}] SUCCESS ({tag}): Both direct and proxied requests succeeded (200)")
         return
 
     # If the proxy failed, but the direct request also failed with the same block/error:
@@ -145,9 +192,7 @@ def _assert_status(url: str, proxied_status: int, unproxied_status: int, imperso
         pytest.skip(f"IP blocked or site down for {url} (Both direct and proxied requests returned {proxied_status})")
 
     # Otherwise, it's a real proxy failure (e.g. direct got 200 but proxied got non-200)
-    assert proxied_status == 200, (
-        f"Proxied request failed ({impersonate}): got {proxied_status}, direct got {unproxied_status}"
-    )
+    assert proxied_status == 200, f"Proxied request failed ({tag}): got {proxied_status}, direct got {unproxied_status}"
 
 
 # ---------------------------------------------------------------------------
@@ -160,107 +205,108 @@ class TestFingerprintBypass:
     """
     Verify that the proxy defeats TLS fingerprinting and bot-detection systems.
 
-    We use a double-request approach:
-    1. Direct request (triggers bot detection/blocking).
-    2. Proxied request (successfully bypasses using browser TLS impersonation).
+    The proxy_server fixture parameterises over (impersonate, header_mode, strip_leak):
+    by default the suite runs four variants — chrome/firefox under enrich mode, and
+    chrome/firefox under override+strip mode. The override variant injects SearXNG-like
+    leak headers via _get() to prove the strip path actually drops them.
     """
 
-    def test_nowsecure_nl(self, proxy_server: tuple[str, str, str]) -> None:
+    def test_nowsecure_nl(self, proxy_server: tuple[str, str, str, str, bool]) -> None:
         """nowsecure.nl is a browser fingerprint / TLS test page."""
-        proxy_url, ca_cert_path, impersonate = proxy_server
+        proxy_url, ca_cert_path, impersonate, header_mode, strip_leak = proxy_server
         url = "https://nowsecure.nl"
 
         unproxied_status = _get_unproxied(url, use_chrome_headers=False)
-        resp = _get(url, proxy_url, ca_cert_path, impersonate)
+        resp = _get(url, proxy_url, ca_cert_path, impersonate, inject_leak_headers=strip_leak)
 
-        _assert_status(url, resp.status_code, unproxied_status, impersonate)
+        _assert_status(url, resp.status_code, unproxied_status, impersonate, header_mode)
         assert len(resp.content) > 1000, "Response body suspiciously small"
 
-    def test_cloudflare_homepage(self, proxy_server: tuple[str, str, str]) -> None:
+    def test_cloudflare_homepage(self, proxy_server: tuple[str, str, str, str, bool]) -> None:
         """cloudflare.com uses JA3/JA4 fingerprinting."""
-        proxy_url, ca_cert_path, impersonate = proxy_server
+        proxy_url, ca_cert_path, impersonate, header_mode, strip_leak = proxy_server
         url = "https://www.cloudflare.com"
 
         unproxied_status = _get_unproxied(url, use_chrome_headers=False)
-        resp = _get(url, proxy_url, ca_cert_path, impersonate)
+        resp = _get(url, proxy_url, ca_cert_path, impersonate, inject_leak_headers=strip_leak)
 
-        _assert_status(url, resp.status_code, unproxied_status, impersonate)
+        _assert_status(url, resp.status_code, unproxied_status, impersonate, header_mode)
         body = resp.text.lower()
         assert "cloudflare" in body, "Expected 'cloudflare' in response body"
 
-    def test_akamai_homepage(self, proxy_server: tuple[str, str, str]) -> None:
+    def test_akamai_homepage(self, proxy_server: tuple[str, str, str, str, bool]) -> None:
         """akamai.com blocks non-browser TLS fingerprints with 403."""
-        proxy_url, ca_cert_path, impersonate = proxy_server
+        proxy_url, ca_cert_path, impersonate, header_mode, strip_leak = proxy_server
         url = "https://www.akamai.com"
 
         unproxied_status = _get_unproxied(url, use_chrome_headers=False)
-        resp = _get(url, proxy_url, ca_cert_path, impersonate)
+        resp = _get(url, proxy_url, ca_cert_path, impersonate, inject_leak_headers=strip_leak)
 
-        _assert_status(url, resp.status_code, unproxied_status, impersonate)
+        _assert_status(url, resp.status_code, unproxied_status, impersonate, header_mode)
         body = resp.text.lower()
         assert "akamai" in body, "Expected 'akamai' in response body"
 
-    def test_datadome_protected_site(self, proxy_server: tuple[str, str, str]) -> None:
+    def test_datadome_protected_site(self, proxy_server: tuple[str, str, str, str, bool]) -> None:
         """datadome.co blocks standard requests with 403."""
-        proxy_url, ca_cert_path, impersonate = proxy_server
+        proxy_url, ca_cert_path, impersonate, header_mode, strip_leak = proxy_server
         url = "https://datadome.co"
 
         unproxied_status = _get_unproxied(url, use_chrome_headers=False)
-        resp = _get(url, proxy_url, ca_cert_path, impersonate)
+        resp = _get(url, proxy_url, ca_cert_path, impersonate, inject_leak_headers=strip_leak)
 
-        _assert_status(url, resp.status_code, unproxied_status, impersonate)
+        _assert_status(url, resp.status_code, unproxied_status, impersonate, header_mode)
         body = resp.text.lower()
         assert "datadome" in body, "Expected 'datadome' in response body"
 
-    def test_imperva_homepage(self, proxy_server: tuple[str, str, str]) -> None:
+    def test_imperva_homepage(self, proxy_server: tuple[str, str, str, str, bool]) -> None:
         """imperva.com runs Imperva WAF / bot management."""
-        proxy_url, ca_cert_path, impersonate = proxy_server
+        proxy_url, ca_cert_path, impersonate, header_mode, strip_leak = proxy_server
         url = "https://www.imperva.com"
 
         unproxied_status = _get_unproxied(url, use_chrome_headers=False)
-        resp = _get(url, proxy_url, ca_cert_path, impersonate)
+        resp = _get(url, proxy_url, ca_cert_path, impersonate, inject_leak_headers=strip_leak)
 
-        _assert_status(url, resp.status_code, unproxied_status, impersonate)
+        _assert_status(url, resp.status_code, unproxied_status, impersonate, header_mode)
         body = resp.text.lower()
         assert "imperva" in body, "Expected 'imperva' in response body"
 
-    def test_linkedin_public_page(self, proxy_server: tuple[str, str, str]) -> None:
+    def test_linkedin_public_page(self, proxy_server: tuple[str, str, str, str, bool]) -> None:
         """LinkedIn uses aggressive bot blocking."""
-        proxy_url, ca_cert_path, impersonate = proxy_server
+        proxy_url, ca_cert_path, impersonate, header_mode, strip_leak = proxy_server
         url = "https://www.linkedin.com"
 
         unproxied_status = _get_unproxied(url, use_chrome_headers=False)
-        resp = _get(url, proxy_url, ca_cert_path, impersonate)
+        resp = _get(url, proxy_url, ca_cert_path, impersonate, inject_leak_headers=strip_leak)
 
-        _assert_status(url, resp.status_code, unproxied_status, impersonate)
+        _assert_status(url, resp.status_code, unproxied_status, impersonate, header_mode)
         body = resp.text.lower()
         assert "linkedin" in body, "Expected 'linkedin' in response body"
 
-    def test_ticketmaster_homepage(self, proxy_server: tuple[str, str, str]) -> None:
+    def test_ticketmaster_homepage(self, proxy_server: tuple[str, str, str, str, bool]) -> None:
         """Ticketmaster uses Akamai bot management (highly aggressive)."""
-        proxy_url, ca_cert_path, impersonate = proxy_server
+        proxy_url, ca_cert_path, impersonate, header_mode, strip_leak = proxy_server
         url = "https://www.ticketmaster.com"
 
         unproxied_status = _get_unproxied(url, use_chrome_headers=False)
-        resp = _get(url, proxy_url, ca_cert_path, impersonate)
+        resp = _get(url, proxy_url, ca_cert_path, impersonate, inject_leak_headers=strip_leak)
 
-        _assert_status(url, resp.status_code, unproxied_status, impersonate)
+        _assert_status(url, resp.status_code, unproxied_status, impersonate, header_mode)
         body = resp.text.lower()
         assert "ticketmaster" in body, "Expected 'ticketmaster' in response body"
 
-    def test_google_homepage(self, proxy_server: tuple[str, str, str]) -> None:
+    def test_google_homepage(self, proxy_server: tuple[str, str, str, str, bool]) -> None:
         """google.com homepage check."""
-        proxy_url, ca_cert_path, impersonate = proxy_server
+        proxy_url, ca_cert_path, impersonate, header_mode, strip_leak = proxy_server
         url = "https://www.google.com"
 
         unproxied_status = _get_unproxied(url, use_chrome_headers=False)
-        resp = _get(url, proxy_url, ca_cert_path, impersonate)
+        resp = _get(url, proxy_url, ca_cert_path, impersonate, inject_leak_headers=strip_leak)
 
-        _assert_status(url, resp.status_code, unproxied_status, impersonate)
+        _assert_status(url, resp.status_code, unproxied_status, impersonate, header_mode)
         body = resp.text.lower()
         assert "google" in body, "Expected 'google' in response body"
 
-    def test_tls_api_ja3_check(self, proxy_server: tuple[str, str, str]) -> None:
+    def test_tls_api_ja3_check(self, proxy_server: tuple[str, str, str, str, bool]) -> None:
         """tls.peet.ws/api/all checks TLS handshake fingerprint (JA3, JA4)."""
         known_bot_ja3 = {
             "62d3494f5d7c57c6d192a8a4af44c793",  # curl
@@ -268,8 +314,14 @@ class TestFingerprintBypass:
             "a0e9f5d64349fb13191bc781f81f42e1",  # wget
         }
 
-        proxy_url, ca_cert_path, impersonate = proxy_server
-        resp = _get("https://tls.peet.ws/api/all", proxy_url, ca_cert_path, impersonate)
+        proxy_url, ca_cert_path, impersonate, header_mode, strip_leak = proxy_server
+        resp = _get(
+            "https://tls.peet.ws/api/all",
+            proxy_url,
+            ca_cert_path,
+            impersonate,
+            inject_leak_headers=strip_leak,
+        )
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}"
 
         data = resp.json()
@@ -278,4 +330,38 @@ class TestFingerprintBypass:
         assert ja3 not in known_bot_ja3, (
             f"JA3 {ja3!r} matches a known non-browser fingerprint — impersonation may not be working"
         )
-        logger.info(f"[tls.peet.ws] Dynamic JA3 fingerprint verified ({impersonate}): {ja3}")
+        logger.info(f"[tls.peet.ws] Dynamic JA3 fingerprint verified ({impersonate}/{header_mode}): {ja3}")
+
+    def test_sannysoft_bot_detection(self, proxy_server: tuple[str, str, str, str, bool]) -> None:
+        """bot.sannysoft.com checks TLS fingerprint and browser headers."""
+        proxy_url, ca_cert_path, impersonate, header_mode, strip_leak = proxy_server
+        url = "https://bot.sannysoft.com"
+
+        unproxied_status = _get_unproxied(url, use_chrome_headers=False)
+        resp = _get(url, proxy_url, ca_cert_path, impersonate, inject_leak_headers=strip_leak)
+
+        _assert_status(url, resp.status_code, unproxied_status, impersonate, header_mode)
+        body = resp.text.lower()
+        assert "<title>antibot</title>" in body, "Expected sannysoft antibot page"
+
+    def test_bet365_kasada(self, proxy_server: tuple[str, str, str, str, bool]) -> None:
+        """bet365.com is protected by Kasada; blocks non-browser TLS clients aggressively."""
+        proxy_url, ca_cert_path, impersonate, header_mode, strip_leak = proxy_server
+        url = "https://www.bet365.com"
+
+        unproxied_status = _get_unproxied(url, use_chrome_headers=False)
+        resp = _get(url, proxy_url, ca_cert_path, impersonate, inject_leak_headers=strip_leak)
+
+        _assert_status(url, resp.status_code, unproxied_status, impersonate, header_mode)
+
+    def test_creepjs_github_pages(self, proxy_server: tuple[str, str, str, str, bool]) -> None:
+        """abrahamjuliot.github.io/creepjs is served via GitHub Pages (Cloudflare-fronted)."""
+        proxy_url, ca_cert_path, impersonate, header_mode, strip_leak = proxy_server
+        url = "https://abrahamjuliot.github.io/creepjs"
+
+        unproxied_status = _get_unproxied(url, use_chrome_headers=False)
+        resp = _get(url, proxy_url, ca_cert_path, impersonate, inject_leak_headers=strip_leak)
+
+        _assert_status(url, resp.status_code, unproxied_status, impersonate, header_mode)
+        body = resp.text.lower()
+        assert "creep" in body, "Expected 'creep' in response body"

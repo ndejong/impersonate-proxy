@@ -61,7 +61,14 @@ _HOST_CERT_MAX: int = 256
 _SESSION_POOL_MAX: int = 32
 _SESSION_POOL: queue.Queue[cffi_requests.Session] = queue.Queue(maxsize=_SESSION_POOL_MAX)
 _IMPERSONATE: str = os.environ.get("IMPERSONATE_PROXY_IMPERSONATE", "chrome")
-_ENRICH_HEADERS: bool = os.environ.get("IMPERSONATE_PROXY_ENRICH_HEADERS", "true").lower() not in ("false", "0", "no")
+_HEADER_MODE: str = os.environ.get("IMPERSONATE_PROXY_HEADER_MODE", "enrich").lower()
+if _HEADER_MODE not in ("passthrough", "enrich", "override"):
+    _HEADER_MODE = "enrich"
+_STRIP_CLIENT_LEAK_HEADERS: bool = os.environ.get("IMPERSONATE_PROXY_STRIP_CLIENT_LEAK_HEADERS", "false").lower() in (
+    "true",
+    "1",
+    "yes",
+)
 _DEBUG: bool = False
 _QUIET: bool = os.environ.get("IMPERSONATE_PROXY_QUIET", "false").lower() in ("true", "1", "yes")
 logger: logging.Logger = logging.getLogger("impersonate-proxy")
@@ -73,6 +80,92 @@ _SENSITIVE_HEADERS: set[str] = {
     "set-cookie",
     "token",
     "x-api-key",
+}
+
+# Header names dropped from client requests when --strip-client-leak-headers is active.
+# These are middlebox-chain or app-tracing signals a client may realistically forward:
+#   * X-Forwarded-* / Forwarded / Via  — added by reverse proxies; a client that sits
+#     behind its own nginx may forward them onward.
+#   * X-Request-ID / X-Correlation-ID  — added by app/framework tracing middleware.
+# Applied in addition to the hop-by-hop skip list.
+_CLIENT_LEAK_HEADERS: set[str] = {
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-forwarded-server",
+    "forwarded",
+    "via",
+    "x-request-id",
+    "x-correlation-id",
+}
+
+# Headers that are normally inserted by a CDN/edge layer on ingress to the CDN
+# (Cloudflare, Fastly, Akamai, etc.), not by clients. If one of these appears in a
+# client request it indicates a misconfiguration (or replay of captured traffic).
+# We surface it with a warning rather than silently stripping, so the misconfig is
+# visible to the operator.
+_CDN_INGRESS_HEADERS: set[str] = {
+    "x-real-ip",
+    "true-client-ip",
+    "cf-connecting-ip",
+    "x-cluster-client-ip",
+    "fastly-client-ip",
+}
+
+# Browser-default header values per impersonation profile. Used by both enrich
+# (fill-if-absent) and override (replace) modes.
+_BROWSER_HEADER_DEFAULTS: dict[str, dict[str, str]] = {
+    "chrome": {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,"
+            "image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+    },
+    "firefox": {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0",
+        "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"),
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+    },
+}
+
+# Non-browser User-Agent substrings that trigger UA replacement in enrich/override modes.
+_NON_BROWSER_UA_MARKERS: tuple[str, ...] = (
+    "curl",
+    "python",
+    "requests",
+    "urllib",
+    "wget",
+    "httpclient",
+    "go-http-client",
+    "postman",
+    "httpx",
+    "aiohttp",
+)
+
+# Headers dropped entirely in override mode (browser navigation requests do not send
+# these, so their presence is a bot telltale signal).
+_OVERRIDE_DROP_HEADERS: set[str] = {
+    "cache-control",
+    "dnt",
+    "connection",
 }
 
 
@@ -310,67 +403,127 @@ def _release_session(session: cffi_requests.Session, *, healthy: bool = True) ->
             session.close()
 
 
-def _enrich_headers(headers: dict[str, str], impersonate: str) -> dict[str, str]:
-    """Enrich headers to match the browser profile we are impersonating.
-
-    Guarantees standard clients (curl, requests, etc.) present correct browser headers,
-    preventing JA3/UA mismatch blocks.
-    """
-    enriched = dict(headers)
-    headers_lower = {k.lower(): (k, v) for k, v in enriched.items()}
-
-    # Check if incoming User-Agent is missing or from a standard non-browser library
-    ua = headers_lower.get("user-agent", ("", ""))[1]
-    is_non_browser = not ua or any(
-        bot in ua.lower()
-        for bot in ["curl", "python", "requests", "urllib", "wget", "httpclient", "go-http-client", "postman"]
-    )
-
+def _profile_defaults(impersonate: str) -> dict[str, str]:
+    """Return the browser-header defaults dict for the given impersonation profile."""
     if impersonate.startswith("firefox"):
-        if is_non_browser:
-            ua_key = "User-Agent"
-            if "user-agent" in headers_lower:
-                ua_key = headers_lower["user-agent"][0]
-            enriched[ua_key] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0"
+        return _BROWSER_HEADER_DEFAULTS["firefox"]
+    return _BROWSER_HEADER_DEFAULTS["chrome"]
 
-        firefox_defaults = {
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-        }
-        for k, v in firefox_defaults.items():
+
+def _is_non_browser_ua(ua: str) -> bool:
+    """Return True if the User-Agent string looks like a non-browser client."""
+    if not ua:
+        return True
+    ua_lower = ua.lower()
+    return any(marker in ua_lower for marker in _NON_BROWSER_UA_MARKERS)
+
+
+def _prepare_headers(
+    headers: dict[str, str],
+    impersonate: str,
+    mode: str | None = None,
+) -> dict[str, str]:
+    """Prepare outgoing headers according to the active header mode.
+
+    Modes (mutually exclusive):
+      - "passthrough": forward client headers untouched.
+      - "enrich":     fill missing browser headers; replace non-browser UA.
+      - "override":   replace the curated browser-header set; drop nav-mismatch
+                      tells (Cache-Control, DNT, Connection); preserve cookies,
+                      auth, referer, content-type, cache-conditionals, etc.
+    """
+    if mode is None:
+        mode = _HEADER_MODE
+    if mode == "passthrough":
+        return dict(headers)
+
+    if mode not in ("enrich", "override"):
+        # Defensive: unknown modes fall back to enrich semantics.
+        mode = "enrich"
+
+    defaults = _profile_defaults(impersonate)
+    headers_lower = {k.lower(): (k, v) for k, v in headers.items()}
+    out: dict[str, str] = dict(headers)
+
+    # ---- User-Agent handling ----
+    # enrich:   replace only when UA looks non-browser (curl, python, etc.).
+    # override: always replace with the profile default UA.
+    ua_key, ua_val = headers_lower.get("user-agent", ("User-Agent", ""))
+    replace_ua = mode == "override" or _is_non_browser_ua(ua_val)
+    if replace_ua:
+        if "user-agent" in headers_lower:
+            out[ua_key] = defaults["User-Agent"]
+        else:
+            out["User-Agent"] = defaults["User-Agent"]
+
+    if mode == "enrich":
+        # Additive: only inject headers that are absent.
+        for k, v in defaults.items():
+            if k.lower() == "user-agent":
+                continue  # already handled above
             if k.lower() not in headers_lower:
-                enriched[k] = v
-    else:  # chrome/default
-        if is_non_browser:
-            ua_key = "User-Agent"
-            if "user-agent" in headers_lower:
-                ua_key = headers_lower["user-agent"][0]
-            enriched[ua_key] = (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                out[k] = v
+        return out
+
+    # mode == "override"
+    # Replace the curated browser-header set with profile defaults.
+    for k, v in defaults.items():
+        if k.lower() == "user-agent":
+            continue  # already handled above
+        if k in out:
+            out[k] = v
+        elif k.lower() in headers_lower:
+            # Replace using the client's original casing.
+            client_key = headers_lower[k.lower()][0]
+            out[client_key] = v
+        else:
+            out[k] = v
+
+    # Drop navigation-mismatch tells. Connection is dropped with a warning, since
+    # curl_cffi manages its own Connection header and a client-supplied value may
+    # conflict with HTTP/2 semantics.
+    for drop_lower in _OVERRIDE_DROP_HEADERS:
+        if drop_lower in headers_lower:
+            client_key = headers_lower[drop_lower][0]
+            if drop_lower == "connection":
+                logger.warning(
+                    "override-headers: dropping client '%s' header — curl_cffi manages "
+                    "Connection state; client-supplied value would conflict with HTTP/2.",
+                    client_key,
+                )
+            else:
+                logger.debug(
+                    "override-headers: dropping client '%s' header (browser navigation requests do not send it).",
+                    client_key,
+                )
+            out.pop(client_key, None)
+
+    return out
+
+
+def _strip_leak_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Drop middlebox-chain / tracing leak headers when --strip-client-leak-headers is active.
+
+    Headers in :data:`_CLIENT_LEAK_HEADERS` are dropped. Headers in
+    :data:`_CDN_INGRESS_HEADERS` are *not* stripped — their presence in a client
+    request indicates a misconfiguration (or replay of captured traffic), so we
+    log a warning and forward them unchanged to make the misconfig visible to the
+    operator.
+    """
+    out: dict[str, str] = {}
+    for k, v in headers.items():
+        kl = k.lower()
+        if kl in _CLIENT_LEAK_HEADERS:
+            continue
+        if kl in _CDN_INGRESS_HEADERS:
+            logger.warning(
+                "strip-client-leak-headers: client sent '%s' — this CDN-ingress header is "
+                "normally added by a CDN/edge layer, not by a client; its presence indicates "
+                "a misconfiguration or replay of captured traffic. Forwarding as-is.",
+                k,
             )
-
-        chrome_defaults = {
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"Windows"',
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-        }
-        for k, v in chrome_defaults.items():
-            if k.lower() not in headers_lower:
-                enriched[k] = v
-
-    return enriched
+        out[k] = v
+    return out
 
 
 def _do_request(
@@ -383,10 +536,13 @@ def _do_request(
     """Issue a request via curl_cffi with TLS impersonation."""
     session = _get_session()
     try:
-        out_headers = _enrich_headers(headers, _IMPERSONATE) if _ENRICH_HEADERS else dict(headers)
+        out_headers = _prepare_headers(headers, _IMPERSONATE, _HEADER_MODE)
+        if _STRIP_CLIENT_LEAK_HEADERS:
+            out_headers = _strip_leak_headers(out_headers)
         logger.debug(
             f"Issuing request: {method} {_show_identifying(url)} "
-            f"(enrich={_ENRICH_HEADERS}, headers={_sanitize_headers(out_headers)})"
+            f"(header_mode={_HEADER_MODE}, strip_leak={_STRIP_CLIENT_LEAK_HEADERS}, "
+            f"headers={_sanitize_headers(out_headers)})"
         )
         resp = session.request(
             method=method,
@@ -560,7 +716,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         wfile.write(f"{k}: {v}\r\n".encode())
                     wfile.write(b"Transfer-Encoding: chunked\r\n")
                     wfile.write(b"Connection: close\r\n\r\n")
-                    for chunk in r.iter_content(CHUNK_SIZE):
+                    for chunk in r.iter_content():
                         if chunk:
                             wfile.write(f"{len(chunk):x}\r\n".encode())
                             wfile.write(chunk)
@@ -655,7 +811,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self.send_header("Transfer-Encoding", "chunked")
                 self.send_header("Connection", "close")
                 self.end_headers()
-                for chunk in resp.iter_content(CHUNK_SIZE):
+                for chunk in resp.iter_content():
                     if chunk:
                         self.wfile.write(f"{len(chunk):x}\r\n".encode())
                         self.wfile.write(chunk)
@@ -679,13 +835,15 @@ def run(
     port: int = 8899,
     impersonate: str = "chrome",
     ca_dir: str | None = None,
-    enrich_headers: bool = True,
+    header_mode: str = "enrich",
+    strip_client_leak_headers: bool = False,
     debug: bool = False,
     quiet: bool = False,
 ) -> None:
-    global _IMPERSONATE, _ENRICH_HEADERS, _DEBUG, _QUIET
+    global _IMPERSONATE, _HEADER_MODE, _STRIP_CLIENT_LEAK_HEADERS, _DEBUG, _QUIET
     _IMPERSONATE = impersonate
-    _ENRICH_HEADERS = enrich_headers
+    _HEADER_MODE = header_mode
+    _STRIP_CLIENT_LEAK_HEADERS = strip_client_leak_headers
     _DEBUG = debug
     _QUIET = quiet
 
@@ -710,7 +868,8 @@ def run(
 
     logger.info(
         f"impersonate-proxy listening on {host}:{port} "
-        f"(impersonating {impersonate}, enrich_headers={enrich_headers}, debug={debug}, "
+        f"(impersonating {impersonate}, header_mode={header_mode}, "
+        f"strip_client_leak_headers={strip_client_leak_headers}, debug={debug}, "
         f"curl_cffi={curl_cffi_version})"
     )
     try:
@@ -743,11 +902,40 @@ def main() -> None:
         default=os.environ.get("IMPERSONATE_PROXY_IMPERSONATE", "chrome"),
         help="Browser to impersonate (chrome, firefox, etc. Default: chrome or IMPERSONATE_PROXY_IMPERSONATE)",
     )
+    header_mode_group = parser.add_mutually_exclusive_group()
+    header_mode_group.add_argument(
+        "--passthrough-headers",
+        action="store_const",
+        dest="header_mode",
+        const="passthrough",
+        default=os.environ.get("IMPERSONATE_PROXY_HEADER_MODE", "enrich").lower(),
+        help="Forward client headers untouched; curl_cffi only sets TLS-impersonation "
+        "headers. Equivalent to the previous --no-enrich-headers behaviour.",
+    )
+    header_mode_group.add_argument(
+        "--enrich-headers",
+        action="store_const",
+        dest="header_mode",
+        const="enrich",
+        help="Fill missing browser headers and replace non-browser User-Agents. [DEFAULT]",
+    )
+    header_mode_group.add_argument(
+        "--override-headers",
+        action="store_const",
+        dest="header_mode",
+        const="override",
+        help="Replace the curated browser-header set (Accept, Sec-*, etc.) with the "
+        "impersonation profile defaults and drop nav-mismatch tells (Cache-Control, "
+        "DNT, Connection). Use for clients that leak non-browser signals (e.g. SearXNG).",
+    )
     parser.add_argument(
-        "--no-enrich-headers",
+        "--strip-client-leak-headers",
         action="store_true",
-        default=os.environ.get("IMPERSONATE_PROXY_ENRICH_HEADERS", "true").lower() in ("false", "0", "no"),
-        help="Disable automatic browser header enrichment (User-Agent, Sec-Fetch-*, etc.) or IMPERSONATE_PROXY_ENRICH_HEADERS=false",
+        default=os.environ.get("IMPERSONATE_PROXY_STRIP_CLIENT_LEAK_HEADERS", "false").lower() in ("true", "1", "yes"),
+        help="Drop middlebox/identity-leak headers (X-Forwarded-*, Forwarded, Via, "
+        "X-Real-IP, True-Client-IP, CF-Connecting-IP, X-Cluster-Client-IP, "
+        "Fastly-Client-IP, X-Request-ID, X-Correlation-ID). Combinable with any "
+        "header mode. Or IMPERSONATE_PROXY_STRIP_CLIENT_LEAK_HEADERS=true",
     )
     parser.add_argument(
         "--ca-dir",
@@ -770,12 +958,14 @@ def main() -> None:
         help="Disable logging of request traffic or IMPERSONATE_PROXY_QUIET=true",
     )
     args = parser.parse_args()
+    header_mode = args.header_mode if args.header_mode in ("passthrough", "enrich", "override") else "enrich"
     run(
         host=args.host,
         port=args.port,
         impersonate=args.impersonate,
         ca_dir=args.ca_dir,
-        enrich_headers=not args.no_enrich_headers,
+        header_mode=header_mode,
+        strip_client_leak_headers=args.strip_client_leak_headers,
         debug=args.debug,
         quiet=args.quiet,
     )

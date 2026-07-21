@@ -60,7 +60,7 @@ Under load (such as bursts of ~100 concurrent requests), initiating new `curl_cf
 
 ---
 
-## 4. Header Enrichment
+## 4. Header Modes
 
 This is one of the most important — and often overlooked — mechanisms in the proxy. It is what makes the difference between bypassing a WAF and getting blocked.
 
@@ -69,26 +69,48 @@ This is one of the most important — and often overlooked — mechanisms in the
 WAF/CDN systems such as Cloudflare, Akamai, and Imperva perform **two independent fingerprinting checks**:
 
 1. **TLS fingerprint** (JA3/JA4): based on the SSL ClientHello — cipher suites, extensions, elliptic curves, etc.
-2. **HTTP header fingerprint**: based on the presence and ordering of HTTP headers — `User-Agent`, `Accept`, `Accept-Language`, `Sec-Fetch-*`, and Chrome Client Hints (`Sec-Ch-Ua-*`).
+2. **HTTP header fingerprint**: based on the presence and ordering of HTTP headers — `User-Agent`, `Accept`, `Accept-Language`, `Accept-Encoding`, `Sec-Fetch-*`, and Chrome Client Hints (`Sec-Ch-Ua-*`).
 
 `curl_cffi` handles the TLS side flawlessly by using libcurl patched with browser fingerprints. However, if you send a `curl/7.81.0` User-Agent or omit `Sec-Fetch-Dest` headers, the WAF sees a TLS handshake that says "Chrome 120" and headers that say "curl" — an immediate mismatch that triggers a block.
 
-**Header enrichment solves this by intercepting the outgoing request headers before they reach the upstream server and ensuring they are consistent with the active impersonation profile.**
+The proxy therefore exposes **three mutually-exclusive header modes** plus an orthogonal **client-leak stripping** flag.
 
-### How enrichment works
+### The three header modes
 
-When a request arrives at the proxy, `_enrich_headers()` applies the following logic:
+| Mode | Flag | Env var | Behaviour |
+|------|------|---------|-----------|
+| **enrich** (default) | `--enrich-headers` | `IMPERSONATE_PROXY_HEADER_MODE=enrich` | Replace non-browser User-Agents; **add** any missing browser headers. Existing client headers are preserved. |
+| **passthrough** | `--passthrough-headers` | `IMPERSONATE_PROXY_HEADER_MODE=passthrough` | Forward client headers untouched (curl_cffi only manages TLS). You are fully responsible for header/TLS consistency. |
+| **override** | `--override-headers` | `IMPERSONATE_PROXY_HEADER_MODE=override` | **Replace** the curated browser-header set (`Accept`, `Accept-Encoding`, `Sec-*`, `User-Agent`, etc.) with the profile defaults; **drop** navigation-mismatch tells (`Cache-Control`, `DNT`, `Connection`); preserve cookies, auth, referer, content-type, cache-conditionals, and custom `X-*` headers. Designed for clients that leak non-browser signals (e.g. SearXNG, httpx, aiohttp). |
 
-1. **Detect non-browser User-Agents**: The incoming `User-Agent` is compared against a blocklist of well-known non-browser patterns: `curl`, `python`, `requests`, `urllib`, `wget`, `httpclient`, `go-http-client`, `postman`.
-2. **Replace with a matching browser UA**: If a non-browser UA is detected, it is replaced with the correct browser User-Agent for the active impersonation profile (e.g. Chrome 120 on Windows).
-3. **Inject missing browser headers**: Any header from the profile's default set that is not already present in the client request is injected. This is **additive only** — existing headers from your client are never overridden (except the UA replacement in step 2).
+### `--strip-client-leak-headers` (orthogonal)
 
-### Chrome profile headers injected
+Drops middlebox-chain and tracing headers that a client may realistically forward and that betray the request as coming through a proxy or non-browser client. Combinable with any header mode:
+
+- `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Forwarded-Server`
+- `Forwarded` (RFC 7239)
+- `Via`
+- `X-Request-ID`, `X-Correlation-ID`
+
+Env var: `IMPERSONATE_PROXY_STRIP_CLIENT_LEAK_HEADERS=true`.
+
+**CDN-ingress headers are *not* stripped.** Headers such as `X-Real-IP`, `True-Client-IP`, `CF-Connecting-IP`, `X-Cluster-Client-IP`, and `Fastly-Client-IP` are normally added by a CDN/edge layer on ingress to the CDN — they should never appear in a client request. If one is present, it indicates a misconfiguration (or replay of captured traffic); the proxy **logs a warning and forwards it unchanged** so the misconfig is visible to the operator rather than silently swallowed.
+
+### How each mode works
+
+When a request arrives at the proxy, `_prepare_headers()` dispatches on the active mode:
+
+1. **passthrough** — returns a copy of the client headers with no changes.
+2. **enrich** — detects non-browser User-Agents (substring match on `curl`, `python`, `requests`, `urllib`, `wget`, `httpclient`, `go-http-client`, `postman`, `httpx`, `aiohttp`) and replaces them with the profile default. Any browser header from the profile defaults that is **absent** from the client request is then injected. Existing headers (other than the non-browser UA) are preserved.
+3. **override** — always replaces the User-Agent with the profile default (regardless of whether the client UA looked like a browser), then **overwrites** the curated header set with the profile defaults, then **drops** `Cache-Control`, `DNT`, and `Connection` (logging a warning for `Connection` because curl_cffi manages it internally). All other client headers — `Cookie`, `Authorization`, `Referer`, `Origin`, `Content-Type`, `If-*`, `Range`, `Host`, `X-API-Key`, custom `X-*` — are preserved.
+
+### Chrome profile headers (enrich injected / override replaced with)
 
 ```
 User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36
 Accept: text/html,application/xhtml+xml,...,*/*;q=0.8
 Accept-Language: en-US,en;q=0.9
+Accept-Encoding: gzip, deflate, br, zstd
 Upgrade-Insecure-Requests: 1
 Sec-Ch-Ua: "Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"
 Sec-Ch-Ua-Mobile: ?0
@@ -99,12 +121,13 @@ Sec-Fetch-Site: none
 Sec-Fetch-User: ?1
 ```
 
-### Firefox profile headers injected
+### Firefox profile headers
 
 ```
 User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0
 Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8
 Accept-Language: en-US,en;q=0.5
+Accept-Encoding: gzip, deflate, br
 Upgrade-Insecure-Requests: 1
 Sec-Fetch-Dest: document
 Sec-Fetch-Mode: navigate
@@ -112,40 +135,39 @@ Sec-Fetch-Site: none
 Sec-Fetch-User: ?1
 ```
 
-!!! note "Client-set headers are preserved"
-    Header enrichment is **non-destructive**. If your client already sets `Accept-Language` or `User-Agent`, those values are preserved as-is (except for the explicit non-browser UA replacement). The proxy only fills in what is missing.
+### Choosing a mode
+
+**enrich (default)** — best for clients that already send browser-shaped headers (e.g. a `requests` script with a custom `User-Agent`). The proxy only fills gaps.
+
+**override** — best for clients that *look* like browsers but leak non-browser signals, such as **SearXNG**. SearXNG (httpx-based) sends `Accept-Encoding: gzip, deflate` (no `br`/`zstd`), `Cache-Control: no-cache`, `DNT: 1`, and may rotate User-Agents that do not match the impersonated profile. Enrich mode preserves all of those (they are valid headers, just non-browser nav defaults), so the WAF sees TLS=Chrome 120 but `Cache-Control: no-cache` on a navigation request — a strong bot tell. Override mode replaces them with the browser defaults and drops the tells.
+
+```bash
+# SearXNG recommended configuration
+impersonate-proxy --override-headers --strip-client-leak-headers
+```
+
+```bash
+# Or via env vars
+IMPERSONATE_PROXY_HEADER_MODE=override \
+IMPERSONATE_PROXY_STRIP_CLIENT_LEAK_HEADERS=true \
+impersonate-proxy
+```
+
+**passthrough** — for users who want full manual control. The proxy only handles TLS; you must ensure your client's HTTP headers are consistent with the impersonated TLS profile.
+
+!!! warning "passthrough + override trade-offs"
+    With `--passthrough-headers`, no header sanitisation happens. If your client sends a `python-httpx` User-Agent or omits `Sec-Fetch-*`, WAFs will block the request despite the impersonated TLS handshake. With `--override-headers`, the `Connection` header is always dropped (curl_cffi manages HTTP/2 connection state itself); a warning is logged on each request that supplied a client `Connection` header.
 
 ### Passing your own headers
 
-If you need full control over outgoing headers — for example, to send a custom `User-Agent`, `Authorization`, or application-specific `Accept` header — you have two options:
-
-**Option 1 — Set headers in your client** (recommended):
-
-Enrichment only injects headers that are *absent* from the client request. If you set a header in your client, it will pass through unchanged:
+Custom `X-*` headers, `Authorization`, `Cookie`, `Referer`, `Origin`, `Content-Type`, `If-*`, and `Range` are **preserved by all three modes**. To set a custom `User-Agent` that survives the proxy, use `--passthrough-headers`:
 
 ```bash
-# Your custom User-Agent is preserved — enrichment skips injection
-curl -x http://127.0.0.1:8899 \
-  -H "User-Agent: MyApp/2.0" \
-  https://example.com
+impersonate-proxy --passthrough-headers
+curl -x http://127.0.0.1:8899 -H "User-Agent: MyApp/2.0" https://example.com
 ```
 
-**Option 2 — Disable enrichment entirely** with `--no-enrich-headers`:
-
-```bash
-impersonate-proxy --no-enrich-headers
-```
-
-Or via environment variable:
-
-```bash
-IMPERSONATE_PROXY_ENRICH_HEADERS=false impersonate-proxy
-```
-
-With enrichment disabled, headers are forwarded exactly as received from the client — nothing is added or modified. This gives you complete control, but you become responsible for ensuring your headers are consistent with the TLS fingerprint.
-
-!!! warning "Disabling enrichment may cause blocks"
-    When `--no-enrich-headers` is active, the proxy still impersonates the TLS fingerprint (e.g. Chrome 120), but sends whatever HTTP headers the client provides. If those headers include a non-browser `User-Agent` or are missing `Sec-Fetch-*` headers, many WAFs will still block the request due to the TLS/HTTP fingerprint mismatch.
+With `--enrich-headers` (default), a non-browser UA is replaced; a browser-shaped UA is preserved. With `--override-headers`, the UA is always replaced with the profile default.
 
 ---
 

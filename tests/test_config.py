@@ -7,6 +7,17 @@ import pytest
 
 from impersonate_proxy import main as impersonate_proxy
 
+_DEFAULT_RUN_CALL: dict[str, object] = {
+    "host": "127.0.0.1",
+    "port": 8899,
+    "impersonate": "chrome",
+    "ca_dir": None,
+    "header_mode": "enrich",
+    "strip_client_leak_headers": False,
+    "debug": False,
+    "quiet": False,
+}
+
 
 def test_config_defaults():
     """Test defaults when no CLI args or env vars are set."""
@@ -16,15 +27,7 @@ def test_config_defaults():
         patch("impersonate_proxy.main.run") as mock_run,
     ):
         impersonate_proxy.main()
-        mock_run.assert_called_once_with(
-            host="127.0.0.1",
-            port=8899,
-            impersonate="chrome",
-            ca_dir=None,
-            enrich_headers=True,
-            debug=False,
-            quiet=False,
-        )
+        mock_run.assert_called_once_with(**_DEFAULT_RUN_CALL)
 
 
 def test_config_env_vars():
@@ -34,7 +37,8 @@ def test_config_env_vars():
         "IMPERSONATE_PROXY_HOST": "10.0.0.2",
         "IMPERSONATE_PROXY_IMPERSONATE": "firefox",
         "IMPERSONATE_PROXY_CA_DIR": "/env/ca",
-        "IMPERSONATE_PROXY_ENRICH_HEADERS": "false",
+        "IMPERSONATE_PROXY_HEADER_MODE": "override",
+        "IMPERSONATE_PROXY_STRIP_CLIENT_LEAK_HEADERS": "true",
         "IMPERSONATE_PROXY_DEBUG": "true",
     }
     with (
@@ -48,7 +52,8 @@ def test_config_env_vars():
             port=9999,
             impersonate="firefox",
             ca_dir="/env/ca",
-            enrich_headers=False,
+            header_mode="override",
+            strip_client_leak_headers=True,
             debug=True,
             quiet=False,
         )
@@ -66,7 +71,8 @@ def test_config_cli_args():
         "safari",
         "--ca-dir",
         "/cli/ca",
-        "--no-enrich-headers",
+        "--passthrough-headers",
+        "--strip-client-leak-headers",
         "--debug",
     ]
     with (
@@ -80,7 +86,8 @@ def test_config_cli_args():
             port=7777,
             impersonate="safari",
             ca_dir="/cli/ca",
-            enrich_headers=False,
+            header_mode="passthrough",
+            strip_client_leak_headers=True,
             debug=True,
             quiet=False,
         )
@@ -93,7 +100,8 @@ def test_config_cli_overrides_env():
         "IMPERSONATE_PROXY_HOST": "10.0.0.2",
         "IMPERSONATE_PROXY_IMPERSONATE": "firefox",
         "IMPERSONATE_PROXY_CA_DIR": "/env/ca",
-        "IMPERSONATE_PROXY_ENRICH_HEADERS": "true",
+        "IMPERSONATE_PROXY_HEADER_MODE": "enrich",
+        "IMPERSONATE_PROXY_STRIP_CLIENT_LEAK_HEADERS": "false",
         "IMPERSONATE_PROXY_DEBUG": "false",
     }
     argv = [
@@ -106,7 +114,8 @@ def test_config_cli_overrides_env():
         "safari",
         "--ca-dir",
         "/cli/ca",
-        "--no-enrich-headers",
+        "--override-headers",
+        "--strip-client-leak-headers",
         "--debug",
     ]
     with (
@@ -120,14 +129,40 @@ def test_config_cli_overrides_env():
             port=7777,
             impersonate="safari",
             ca_dir="/cli/ca",
-            enrich_headers=False,
+            header_mode="override",
+            strip_client_leak_headers=True,
             debug=True,
             quiet=False,
         )
 
 
 @pytest.mark.parametrize(
-    "env_val,expected_enrich",
+    "env_val,expected_mode",
+    [
+        ("passthrough", "passthrough"),
+        ("enrich", "enrich"),
+        ("override", "override"),
+        ("", "enrich"),
+        ("invalid", "enrich"),
+        ("PASSTHROUGH", "passthrough"),
+        ("Override", "override"),
+    ],
+)
+def test_config_header_mode_env_variants(env_val, expected_mode):
+    """Test IMPERSONATE_PROXY_HEADER_MODE parsing and fallback to enrich."""
+    env = {"IMPERSONATE_PROXY_HEADER_MODE": env_val} if env_val else {}
+    with (
+        patch("sys.argv", ["impersonate-proxy"]),
+        patch.dict(os.environ, env, clear=True),
+        patch("impersonate_proxy.main.run") as mock_run,
+    ):
+        impersonate_proxy.main()
+        mock_run.assert_called_once()
+        assert mock_run.call_args[1]["header_mode"] == expected_mode
+
+
+@pytest.mark.parametrize(
+    "env_val,expected_strip",
     [
         ("true", True),
         ("1", True),
@@ -137,9 +172,9 @@ def test_config_cli_overrides_env():
         ("no", False),
     ],
 )
-def test_config_enrich_headers_env_variants(env_val, expected_enrich):
-    """Test different boolean-like environment variable values for header enrichment."""
-    env = {"IMPERSONATE_PROXY_ENRICH_HEADERS": env_val}
+def test_config_strip_leak_env_variants(env_val, expected_strip):
+    """Test IMPERSONATE_PROXY_STRIP_CLIENT_LEAK_HEADERS boolean parsing."""
+    env = {"IMPERSONATE_PROXY_STRIP_CLIENT_LEAK_HEADERS": env_val}
     with (
         patch("sys.argv", ["impersonate-proxy"]),
         patch.dict(os.environ, env, clear=True),
@@ -147,7 +182,7 @@ def test_config_enrich_headers_env_variants(env_val, expected_enrich):
     ):
         impersonate_proxy.main()
         mock_run.assert_called_once()
-        assert mock_run.call_args[1]["enrich_headers"] is expected_enrich
+        assert mock_run.call_args[1]["strip_client_leak_headers"] is expected_strip
 
 
 @pytest.mark.parametrize(
@@ -205,15 +240,9 @@ def test_config_quiet_via_env():
         patch("impersonate_proxy.main.run") as mock_run,
     ):
         impersonate_proxy.main()
-        mock_run.assert_called_once_with(
-            host="127.0.0.1",
-            port=8899,
-            impersonate="chrome",
-            ca_dir=None,
-            enrich_headers=True,
-            debug=False,
-            quiet=True,
-        )
+        expected = dict(_DEFAULT_RUN_CALL)
+        expected["quiet"] = True
+        mock_run.assert_called_once_with(**expected)
 
 
 def test_config_quiet_via_cli():
@@ -224,15 +253,9 @@ def test_config_quiet_via_cli():
         patch("impersonate_proxy.main.run") as mock_run,
     ):
         impersonate_proxy.main()
-        mock_run.assert_called_once_with(
-            host="127.0.0.1",
-            port=8899,
-            impersonate="chrome",
-            ca_dir=None,
-            enrich_headers=True,
-            debug=False,
-            quiet=True,
-        )
+        expected = dict(_DEFAULT_RUN_CALL)
+        expected["quiet"] = True
+        mock_run.assert_called_once_with(**expected)
 
 
 def test_config_quiet_cli_overrides_env():
@@ -244,15 +267,9 @@ def test_config_quiet_cli_overrides_env():
         patch("impersonate_proxy.main.run") as mock_run,
     ):
         impersonate_proxy.main()
-        mock_run.assert_called_once_with(
-            host="127.0.0.1",
-            port=8899,
-            impersonate="chrome",
-            ca_dir=None,
-            enrich_headers=True,
-            debug=False,
-            quiet=True,
-        )
+        expected = dict(_DEFAULT_RUN_CALL)
+        expected["quiet"] = True
+        mock_run.assert_called_once_with(**expected)
 
 
 @pytest.mark.parametrize(
@@ -277,3 +294,16 @@ def test_config_quiet_env_variants(env_val, expected_quiet):
         impersonate_proxy.main()
         mock_run.assert_called_once()
         assert mock_run.call_args[1]["quiet"] is expected_quiet
+
+
+def test_config_header_modes_mutually_exclusive():
+    """Test that passing two header-mode flags triggers argparse error."""
+    argv = ["impersonate-proxy", "--passthrough-headers", "--override-headers"]
+    with (
+        patch("sys.argv", argv),
+        patch.dict(os.environ, {}, clear=True),
+        patch("argparse.ArgumentParser.error", side_effect=SystemExit(2)) as mock_error,
+    ):
+        with pytest.raises(SystemExit):
+            impersonate_proxy.main()
+        mock_error.assert_called_once()
