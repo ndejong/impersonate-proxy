@@ -232,3 +232,21 @@ class TestProxyHTTP:
                     assert "CONNECT" not in record.message
         finally:
             impersonate_proxy._QUIET = False
+
+    def test_upstream_proxy_configuration(self):
+        """Verify that upstream_proxy is passed to curl_cffi request call."""
+        from unittest.mock import patch
+
+        from impersonate_proxy.context import ProxyConfig, ProxyContext
+        from impersonate_proxy.session_pool import do_request
+
+        ctx = ProxyContext(
+            ProxyConfig(upstream_proxy="http://parent.proxy:8080", connect_timeout=5.0, read_timeout=60.0)
+        )
+        with patch("impersonate_proxy.session_pool.get_session") as mock_get_session:
+            mock_sess = mock_get_session.return_value
+            do_request(ctx, "GET", "http://example.com", {"Host": "example.com"}, None)
+            mock_sess.request.assert_called_once()
+            call_kwargs = mock_sess.request.call_args[1]
+            assert call_kwargs["proxies"] == {"http": "http://parent.proxy:8080", "https": "http://parent.proxy:8080"}
+            assert call_kwargs["timeout"] == (5.0, 60.0)

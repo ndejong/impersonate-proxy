@@ -59,7 +59,7 @@ impersonate-proxy
 ## Features
 
 - **TLS Impersonation**: Disguises client TLS fingerprints as standard browsers (Chrome or Firefox).
-- **Centralized Header Enrichment**: Automatically decorates incoming requests from plain/command-line clients (e.g. `curl`, `requests`) with matching browser headers (User-Agent, Accept, Chromium Client Hints) corresponding to the active TLS profile.
+- **Header Adapter & Delegation**: Strips conflicting non-browser client headers (e.g. `User-Agent: python-httpx`) so native `curl-impersonate` profile defaults shine through, while preserving payload and auth semantics.
 - **Connection Keep-Alive & Session Pooling**: Reuses TLS sessions and upstream TCP connections to optimize latency and handle high-concurrency requests.
 - **Fast Dynamic Cert Generation**: Dynamic certificate generation using fast Elliptic Curve (ECDSA P-256) cryptography with leaf key reuse.
 
@@ -70,8 +70,8 @@ impersonate-proxy
 | Capability | What it does | Benefit |
 |---|---|---|
 | **TLS Fingerprinting** | Matches JA3/JA4/HTTP2 fingerprints with real browsers | Defeats Cloudflare, Akamai, and Imperva WAF blocks |
-| **MITM CONNECT Decryption** | Decrypts and re-signs HTTPS traffic using local CA | Allows inspection, headers modification, and proxying of TLS streams |
-| **Header Enrichment** | Auto-injects appropriate browser headers & Client Hints | Ensures User-Agent and TLS fingerprint profiles align out-of-the-box |
+| **MITM CONNECT Decryption** | Decrypts and re-signs HTTPS traffic using local CA | Allows inspection, header filtering, and proxying of TLS streams |
+| **Header Delegation** | Strips non-browser headers and delegates to `curl-impersonate` | Ensures User-Agent and TLS fingerprint profiles align natively without duplication |
 | **Session Pooling** | Maintains queue-based reusable `curl_cffi` sessions | Boosts performance for concurrent request bursts to ~70+ RPS |
 | **P-256 Cryptography** | Reuses a static leaf private key for ECDSA cert creation | Reduces leaf certificate dynamic issuance time to `<1ms` |
 
@@ -80,4 +80,4 @@ impersonate-proxy
 ## Guided Tour
 
 - **[Installation Guide](install.md)**: System setup, CLI parameters, and Docker integrations.
-- **[How It Works](workflow.md)**: Deep dive into the interception pipeline, session pool, and header decoration mechanism.
+- **[How It Works](workflow.md)**: Deep dive into the interception pipeline, session pool, and header delegation mechanism.

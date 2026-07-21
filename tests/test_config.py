@@ -12,10 +12,14 @@ _DEFAULT_RUN_CALL: dict[str, object] = {
     "port": 8899,
     "impersonate": "chrome",
     "ca_dir": None,
-    "header_mode": "enrich",
+    "header_mode": "cffi-defaults",
     "strip_client_leak_headers": False,
     "debug": False,
     "quiet": False,
+    "upstream_proxy": None,
+    "session_pool_max": 32,
+    "connect_timeout": 10.0,
+    "read_timeout": 300.0,
 }
 
 
@@ -37,7 +41,7 @@ def test_config_env_vars():
         "IMPERSONATE_PROXY_HOST": "10.0.0.2",
         "IMPERSONATE_PROXY_IMPERSONATE": "firefox",
         "IMPERSONATE_PROXY_CA_DIR": "/env/ca",
-        "IMPERSONATE_PROXY_HEADER_MODE": "override",
+        "IMPERSONATE_PROXY_HEADER_MODE": "cffi-defaults",
         "IMPERSONATE_PROXY_STRIP_CLIENT_LEAK_HEADERS": "true",
         "IMPERSONATE_PROXY_DEBUG": "true",
     }
@@ -52,10 +56,14 @@ def test_config_env_vars():
             port=9999,
             impersonate="firefox",
             ca_dir="/env/ca",
-            header_mode="override",
+            header_mode="cffi-defaults",
             strip_client_leak_headers=True,
             debug=True,
             quiet=False,
+            upstream_proxy=None,
+            session_pool_max=32,
+            connect_timeout=10.0,
+            read_timeout=300.0,
         )
 
 
@@ -90,6 +98,10 @@ def test_config_cli_args():
             strip_client_leak_headers=True,
             debug=True,
             quiet=False,
+            upstream_proxy=None,
+            session_pool_max=32,
+            connect_timeout=10.0,
+            read_timeout=300.0,
         )
 
 
@@ -100,7 +112,7 @@ def test_config_cli_overrides_env():
         "IMPERSONATE_PROXY_HOST": "10.0.0.2",
         "IMPERSONATE_PROXY_IMPERSONATE": "firefox",
         "IMPERSONATE_PROXY_CA_DIR": "/env/ca",
-        "IMPERSONATE_PROXY_HEADER_MODE": "enrich",
+        "IMPERSONATE_PROXY_HEADER_MODE": "cffi-defaults",
         "IMPERSONATE_PROXY_STRIP_CLIENT_LEAK_HEADERS": "false",
         "IMPERSONATE_PROXY_DEBUG": "false",
     }
@@ -114,7 +126,7 @@ def test_config_cli_overrides_env():
         "safari",
         "--ca-dir",
         "/cli/ca",
-        "--override-headers",
+        "--passthrough-headers",
         "--strip-client-leak-headers",
         "--debug",
     ]
@@ -129,10 +141,14 @@ def test_config_cli_overrides_env():
             port=7777,
             impersonate="safari",
             ca_dir="/cli/ca",
-            header_mode="override",
+            header_mode="passthrough",
             strip_client_leak_headers=True,
             debug=True,
             quiet=False,
+            upstream_proxy=None,
+            session_pool_max=32,
+            connect_timeout=10.0,
+            read_timeout=300.0,
         )
 
 
@@ -140,16 +156,16 @@ def test_config_cli_overrides_env():
     "env_val,expected_mode",
     [
         ("passthrough", "passthrough"),
-        ("enrich", "enrich"),
-        ("override", "override"),
-        ("", "enrich"),
-        ("invalid", "enrich"),
+        ("cffi-defaults", "cffi-defaults"),
+        ("", "cffi-defaults"),
+        ("invalid", "cffi-defaults"),
         ("PASSTHROUGH", "passthrough"),
-        ("Override", "override"),
+        ("CFFI-DEFAULTS", "cffi-defaults"),
+        ("Cffi-Defaults", "cffi-defaults"),
     ],
 )
 def test_config_header_mode_env_variants(env_val, expected_mode):
-    """Test IMPERSONATE_PROXY_HEADER_MODE parsing and fallback to enrich."""
+    """Test IMPERSONATE_PROXY_HEADER_MODE parsing and fallback to cffi-defaults."""
     env = {"IMPERSONATE_PROXY_HEADER_MODE": env_val} if env_val else {}
     with (
         patch("sys.argv", ["impersonate-proxy"]),
@@ -298,7 +314,7 @@ def test_config_quiet_env_variants(env_val, expected_quiet):
 
 def test_config_header_modes_mutually_exclusive():
     """Test that passing two header-mode flags triggers argparse error."""
-    argv = ["impersonate-proxy", "--passthrough-headers", "--override-headers"]
+    argv = ["impersonate-proxy", "--passthrough-headers", "--cffi-defaults"]
     with (
         patch("sys.argv", argv),
         patch.dict(os.environ, {}, clear=True),
@@ -307,3 +323,67 @@ def test_config_header_modes_mutually_exclusive():
         with pytest.raises(SystemExit):
             impersonate_proxy.main()
         mock_error.assert_called_once()
+
+
+def test_config_new_features_cli():
+    """Test parsing of upstream proxy, pool max, and timeout CLI arguments."""
+    argv = [
+        "impersonate-proxy",
+        "--upstream-proxy",
+        "http://127.0.0.1:8080",
+        "--session-pool-max",
+        "64",
+        "--connect-timeout",
+        "5.0",
+        "--read-timeout",
+        "120.0",
+    ]
+    with (
+        patch("sys.argv", argv),
+        patch.dict(os.environ, {}, clear=True),
+        patch("impersonate_proxy.main.run") as mock_run,
+    ):
+        impersonate_proxy.main()
+        mock_run.assert_called_once()
+        kwargs = mock_run.call_args[1]
+        assert kwargs["upstream_proxy"] == "http://127.0.0.1:8080"
+        assert kwargs["session_pool_max"] == 64
+        assert kwargs["connect_timeout"] == 5.0
+        assert kwargs["read_timeout"] == 120.0
+
+
+def test_config_new_features_env():
+    """Test parsing of upstream proxy, pool max, and timeout environment variables."""
+    env = {
+        "IMPERSONATE_PROXY_UPSTREAM_PROXY": "http://proxy.internal:3128",
+        "IMPERSONATE_PROXY_SESSION_POOL_MAX": "128",
+        "IMPERSONATE_PROXY_CONNECT_TIMEOUT": "2.5",
+        "IMPERSONATE_PROXY_READ_TIMEOUT": "60.0",
+    }
+    with (
+        patch("sys.argv", ["impersonate-proxy"]),
+        patch.dict(os.environ, env, clear=True),
+        patch("impersonate_proxy.main.run") as mock_run,
+    ):
+        impersonate_proxy.main()
+        mock_run.assert_called_once()
+        kwargs = mock_run.call_args[1]
+        assert kwargs["upstream_proxy"] == "http://proxy.internal:3128"
+        assert kwargs["session_pool_max"] == 128
+        assert kwargs["connect_timeout"] == 2.5
+        assert kwargs["read_timeout"] == 60.0
+
+
+@pytest.mark.parametrize(
+    "browser_profile",
+    ["chrome", "firefox", "safari", "edge", "chrome120", "chrome146", "firefox147"],
+)
+def test_impersonate_profiles_valid_in_curl_cffi(browser_profile: str):
+    """Ensure standard browser profiles are supported by curl_cffi without runtime latency."""
+    from curl_cffi import requests as cffi_requests
+
+    sess = cffi_requests.Session(impersonate=browser_profile)
+    try:
+        assert sess is not None
+    finally:
+        sess.close()

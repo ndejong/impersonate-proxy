@@ -17,7 +17,7 @@ sequenceDiagram
     Client->>Proxy: HTTP request or HTTPS CONNECT
     alt Plain HTTP Request
         Proxy->>Proxy: Lease session from Pool
-        Proxy->>Proxy: Enrich headers (Match TLS Profile)
+        Proxy->>Proxy: Adapt headers (Strip non-browser client overrides)
         Proxy->>Target: Issue request (via curl_cffi with TLS Impersonation)
         Target-->>Proxy: Response
         Proxy-->>Client: Stream response chunk-by-chunk
@@ -28,7 +28,7 @@ sequenceDiagram
         Proxy->>Client: Perform local TLS Handshake (MITM)
         Client->>Proxy: Encrypted HTTP request
         Proxy->>Proxy: Lease session from Pool
-        Proxy->>Proxy: Enrich headers (Match TLS Profile)
+        Proxy->>Proxy: Adapt headers (Strip non-browser client overrides)
         Proxy->>Target: Issue request (via curl_cffi with TLS Impersonation)
         Target-->>Proxy: Response
         Proxy-->>Client: Stream response chunk-by-chunk
@@ -73,15 +73,14 @@ WAF/CDN systems such as Cloudflare, Akamai, and Imperva perform **two independen
 
 `curl_cffi` handles the TLS side flawlessly by using libcurl patched with browser fingerprints. However, if you send a `curl/7.81.0` User-Agent or omit `Sec-Fetch-Dest` headers, the WAF sees a TLS handshake that says "Chrome 120" and headers that say "curl" — an immediate mismatch that triggers a block.
 
-The proxy therefore exposes **three mutually-exclusive header modes** plus an orthogonal **client-leak stripping** flag.
+The proxy therefore exposes **two mutually-exclusive header modes** plus an orthogonal **client-leak stripping** flag. The key insight: **curl_cffi already injects the full current browser header set** when `default_headers=True` (the project's default). The proxy's job is to *get out of curl_cffi's way* — strip client-supplied browser-shape headers that would override curl_cffi's defaults, and let curl_cffi own the rest.
 
-### The three header modes
+### The two header modes
 
 | Mode | Flag | Env var | Behaviour |
 |------|------|---------|-----------|
-| **enrich** (default) | `--enrich-headers` | `IMPERSONATE_PROXY_HEADER_MODE=enrich` | Replace non-browser User-Agents; **add** any missing browser headers. Existing client headers are preserved. |
-| **passthrough** | `--passthrough-headers` | `IMPERSONATE_PROXY_HEADER_MODE=passthrough` | Forward client headers untouched (curl_cffi only manages TLS). You are fully responsible for header/TLS consistency. |
-| **override** | `--override-headers` | `IMPERSONATE_PROXY_HEADER_MODE=override` | **Replace** the curated browser-header set (`Accept`, `Accept-Encoding`, `Sec-*`, `User-Agent`, etc.) with the profile defaults; **drop** navigation-mismatch tells (`Cache-Control`, `DNT`, `Connection`); preserve cookies, auth, referer, content-type, cache-conditionals, and custom `X-*` headers. Designed for clients that leak non-browser signals (e.g. SearXNG, httpx, aiohttp). |
+| **cffi-defaults** (default) | `--cffi-defaults` | `IMPERSONATE_PROXY_HEADER_MODE=cffi-defaults` | **Strip** browser-shape headers (`User-Agent`, `Sec-Ch-Ua-*`, `Accept-Encoding`, `Priority`, `TE`, `Upgrade-Insecure-Requests`, `Sec-Fetch-User`) from the client so curl_cffi injects the correct current browser values; **drop** bot-tell headers (`Cache-Control`, `DNT`, `Connection`); **preserve** request-specific headers (`Cookie`, `Authorization`, `Referer`, `Content-Type`, `If-*`, `Range`, `Host`) and shape-dependent headers (`Accept`, `Sec-Fetch-Dest/Mode/Site`, real `Accept-Language`). |
+| **passthrough** | `--passthrough-headers` | `IMPERSONATE_PROXY_HEADER_MODE=passthrough` | Forward client headers untouched (curl_cffi only manages TLS). You are fully responsible for header/TLS consistency. For advanced users. |
 
 ### `--strip-client-leak-headers` (orthogonal)
 
@@ -96,90 +95,52 @@ Env var: `IMPERSONATE_PROXY_STRIP_CLIENT_LEAK_HEADERS=true`.
 
 **CDN-ingress headers are *not* stripped.** Headers such as `X-Real-IP`, `True-Client-IP`, `CF-Connecting-IP`, `X-Cluster-Client-IP`, and `Fastly-Client-IP` are normally added by a CDN/edge layer on ingress to the CDN — they should never appear in a client request. If one is present, it indicates a misconfiguration (or replay of captured traffic); the proxy **logs a warning and forwards it unchanged** so the misconfig is visible to the operator rather than silently swallowed.
 
-### How each mode works
+### How cffi-defaults works
 
-When a request arrives at the proxy, `_prepare_headers()` dispatches on the active mode:
+curl_cffi (with `default_headers=True`, the project's default) automatically injects the **complete current browser header set** from its impersonation profile — `User-Agent`, `Sec-Ch-Ua-*`, `Sec-Fetch-*`, `Accept`, `Accept-Encoding`, `Accept-Language`, `Priority`, `TE` — matching the [curl-impersonate captured signatures](https://github.com/lexiforest/curl-impersonate/tree/main/tests/signatures) for `chrome146` / `firefox147` exactly.
 
-1. **passthrough** — returns a copy of the client headers with no changes.
-2. **enrich** — detects non-browser User-Agents (substring match on `curl`, `python`, `requests`, `urllib`, `wget`, `httpclient`, `go-http-client`, `postman`, `httpx`, `aiohttp`) and replaces them with the profile default. Any browser header from the profile defaults that is **absent** from the client request is then injected. Existing headers (other than the non-browser UA) are preserved.
-3. **override** — always replaces the User-Agent with the profile default (regardless of whether the client UA looked like a browser), then **overwrites** the curated header set with the profile defaults, then **drops** `Cache-Control`, `DNT`, and `Connection` (logging a warning for `Connection` because curl_cffi manages it internally). All other client headers — `Cookie`, `Authorization`, `Referer`, `Origin`, `Content-Type`, `If-*`, `Range`, `Host`, `X-API-Key`, custom `X-*` — are preserved.
+**Critical behaviour**: client-supplied headers OVERRIDE curl_cffi's defaults. So forwarding a client's `Accept: */*` or `Accept-Encoding: gzip, deflate` *silently breaks* impersonation — curl_cffi cannot fix it.
 
-### Chrome profile headers (enrich injected / override replaced with)
+`_cffi_defaults_headers()` therefore:
 
-Values sourced from the [curl-impersonate captured signature for Chrome 142](https://github.com/lexiforest/curl-impersonate/blob/main/tests/signatures/chrome_142.0.7444.176.yaml),
-aligned with curl_cffi's default `chrome` target (`chrome146` as of curl_cffi >= 0.7).
-The OS is macOS to match the TLS fingerprint's claimed OS — using Windows here
-would create a TLS-vs-headers OS mismatch detectable by WAFs.
+1. **Strips** browser-shape headers the client should not own (`User-Agent`, `Sec-Ch-Ua`, `Sec-Ch-Ua-Mobile`, `Sec-Ch-Ua-Platform`, `Accept-Encoding`, `Upgrade-Insecure-Requests`, `Sec-Fetch-User`, `Priority`, `TE`) so curl_cffi's profile defaults shine through.
+2. **Drops** bot-tell headers (`Cache-Control`, `DNT`, `Connection` — the last with a warning because curl_cffi manages HTTP/2 connection state itself).
+3. **Strips** `Accept-Language` only when the client sent the literal `*` (a bot tell); real values like `en-US,en;q=0.9` are preserved.
+4. **Preserves** everything else: request-specific headers (`Host`, `Cookie`, `Authorization`, `Referer`, `Origin`, `Content-Type`, `Content-Length`, `If-Match`, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since`, `Range`) and shape-dependent headers curl_cffi cannot infer — `Accept` (nav vs XHR), `Sec-Fetch-Dest/Mode/Site`. SearXNG correctly sends `Sec-Fetch-Mode: cors` on its XHR requests; preserving it keeps the request XHR-shaped. Forcing curl_cffi's nav-style defaults onto an XHR request would itself be a bot tell.
 
-```
-User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36
-Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7
-Accept-Language: en-US,en;q=0.9
-Accept-Encoding: gzip, deflate, br, zstd
-Upgrade-Insecure-Requests: 1
-Sec-Ch-Ua: "Chromium";v="146", "Google Chrome";v="146", "Not_A Brand";v="99"
-Sec-Ch-Ua-Mobile: ?0
-Sec-Ch-Ua-Platform: "macOS"
-Sec-Fetch-Dest: document
-Sec-Fetch-Mode: navigate
-Sec-Fetch-Site: none
-Sec-Fetch-User: ?1
-Priority: u=0, i
-```
-
-### Firefox profile headers
-
-Values sourced from the [curl-impersonate captured signature for Firefox 144](https://github.com/lexiforest/curl-impersonate/blob/main/tests/signatures/firefox_144.0.0_linux.yaml),
-aligned with curl_cffi's default `firefox` target (`firefox147`). Modern Firefox
-(>= 135) also advertises `zstd` and sends the `Priority` and `TE: trailers` headers.
-
-```
-User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:147.0) Gecko/20100101 Firefox/147.0
-Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
-Accept-Language: en-US,en;q=0.5
-Accept-Encoding: gzip, deflate, br, zstd
-Upgrade-Insecure-Requests: 1
-Sec-Fetch-Dest: document
-Sec-Fetch-Mode: navigate
-Sec-Fetch-Site: none
-Sec-Fetch-User: ?1
-Priority: u=0, i
-TE: trailers
-```
+The Chrome and Firefox header sets curl_cffi injects are sourced from the [curl-impersonate signature files](https://github.com/lexiforest/curl-impersonate/tree/main/tests/signatures) and track the latest default profiles (`chrome146`, `firefox147` as of curl_cffi >= 0.7). The proxy no longer hardcodes them.
 
 ### Choosing a mode
 
-**enrich (default)** — best for clients that already send browser-shaped headers (e.g. a `requests` script with a custom `User-Agent`). The proxy only fills gaps.
-
-**override** — best for clients that *look* like browsers but leak non-browser signals, such as **SearXNG**. SearXNG (httpx-based) sends `Accept-Encoding: gzip, deflate` (no `br`/`zstd`), `Cache-Control: no-cache`, `DNT: 1`, and may rotate User-Agents that do not match the impersonated profile. Enrich mode preserves all of those (they are valid headers, just non-browser nav defaults), so the WAF sees TLS=Chrome 120 but `Cache-Control: no-cache` on a navigation request — a strong bot tell. Override mode replaces them with the browser defaults and drops the tells.
+**cffi-defaults (default)** — best for almost all clients, including **SearXNG**. SearXNG (httpx-based) sends `Accept-Encoding: gzip, deflate` (no `br`/`zstd`), `Cache-Control: no-cache`, `DNT: 1`, and a `python-httpx` User-Agent. cffi-defaults strips all of those and lets curl_cffi inject the correct Chrome/Firefox equivalents, while preserving SearXNG's `Accept: */*` and `Sec-Fetch-Mode: cors` so the request keeps its XHR shape.
 
 ```bash
 # SearXNG recommended configuration
-impersonate-proxy --override-headers --strip-client-leak-headers
+impersonate-proxy --cffi-defaults --strip-client-leak-headers
 ```
 
 ```bash
-# Or via env vars
-IMPERSONATE_PROXY_HEADER_MODE=override \
+# Or via env vars (cffi-defaults is the default, shown for completeness)
+IMPERSONATE_PROXY_HEADER_MODE=cffi-defaults \
 IMPERSONATE_PROXY_STRIP_CLIENT_LEAK_HEADERS=true \
 impersonate-proxy
 ```
 
 **passthrough** — for users who want full manual control. The proxy only handles TLS; you must ensure your client's HTTP headers are consistent with the impersonated TLS profile.
 
-!!! warning "passthrough + override trade-offs"
-    With `--passthrough-headers`, no header sanitisation happens. If your client sends a `python-httpx` User-Agent or omits `Sec-Fetch-*`, WAFs will block the request despite the impersonated TLS handshake. With `--override-headers`, the `Connection` header is always dropped (curl_cffi manages HTTP/2 connection state itself); a warning is logged on each request that supplied a client `Connection` header.
+!!! warning "passthrough trade-offs"
+    With `--passthrough-headers`, no header sanitisation happens. If your client sends a `python-httpx` User-Agent or omits `Sec-Fetch-*`, WAFs will block the request despite the impersonated TLS handshake.
 
 ### Passing your own headers
 
-Custom `X-*` headers, `Authorization`, `Cookie`, `Referer`, `Origin`, `Content-Type`, `If-*`, and `Range` are **preserved by all three modes**. To set a custom `User-Agent` that survives the proxy, use `--passthrough-headers`:
+Custom `X-*` headers, `Authorization`, `Cookie`, `Referer`, `Origin`, `Content-Type`, `If-*`, and `Range` are **preserved by both modes**. To set a custom `User-Agent` that survives the proxy, use `--passthrough-headers`:
 
 ```bash
 impersonate-proxy --passthrough-headers
 curl -x http://127.0.0.1:8899 -H "User-Agent: MyApp/2.0" https://example.com
 ```
 
-With `--enrich-headers` (default), a non-browser UA is replaced; a browser-shaped UA is preserved. With `--override-headers`, the UA is always replaced with the profile default.
+With `--cffi-defaults` (default), the User-Agent is always stripped so curl_cffi injects the impersonated profile's browser UA.
 
 ---
 

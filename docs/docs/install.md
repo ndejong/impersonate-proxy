@@ -60,8 +60,12 @@ Run `impersonate-proxy --help` to view all available parameters:
 ```text
 usage: python3 -m impersonate_proxy.main [-h] [--port PORT] [--host HOST]
                                          [--impersonate IMPERSONATE]
-                                         [--passthrough-headers | --enrich-headers | --override-headers]
+                                         [--cffi-defaults | --passthrough-headers]
                                          [--strip-client-leak-headers]
+                                         [--upstream-proxy UPSTREAM_PROXY]
+                                         [--session-pool-max SESSION_POOL_MAX]
+                                         [--connect-timeout CONNECT_TIMEOUT]
+                                         [--read-timeout READ_TIMEOUT]
                                          [--ca-dir CA_DIR] [--debug] [--quiet]
 
 HTTP/HTTPS proxy that impersonates browser TLS fingerprints
@@ -75,23 +79,33 @@ options:
   --impersonate, -i IMPERSONATE
                         Browser to impersonate (chrome, firefox, etc. Default:
                         chrome or IMPERSONATE_PROXY_IMPERSONATE)
+  --cffi-defaults       Strip browser-shape headers (User-Agent, Sec-Ch-Ua-*,
+                        Accept-Encoding, Priority, TE, Upgrade-Insecure-Requests,
+                        Sec-Fetch-User) from the client and drop bot-tell
+                        headers (Cache-Control, DNT, Connection) so curl_cffi
+                        injects the correct current browser values from its
+                        impersonation profile. [DEFAULT]
   --passthrough-headers
                         Forward client headers untouched; curl_cffi only sets
-                        TLS-impersonation headers. Equivalent to the previous
-                        --no-enrich-headers behaviour.
-  --enrich-headers      Fill missing browser headers and replace non-browser
-                        User-Agents. [DEFAULT]
-  --override-headers    Replace the curated browser-header set (Accept, Sec-*,
-                        etc.) with the impersonation profile defaults and drop
-                        nav-mismatch tells (Cache-Control, DNT, Connection).
-                        Use for clients that leak non-browser signals (e.g.
-                        SearXNG).
+                        TLS-impersonation headers. For advanced users.
   --strip-client-leak-headers
                         Drop middlebox-chain / tracing leak headers (X-Forwarded-*,
                         Forwarded, Via, X-Request-ID, X-Correlation-ID).
                         CDN-ingress headers (X-Real-IP, True-Client-IP, etc.)
                         are forwarded with a warning when present. Combinable
                         with any header mode.
+  --upstream-proxy UPSTREAM_PROXY
+                        Upstream egress proxy URL (e.g. http://127.0.0.1:8080 or
+                        IMPERSONATE_PROXY_UPSTREAM_PROXY)
+  --session-pool-max SESSION_POOL_MAX
+                        Maximum reusable curl_cffi sessions in pool (default: 32 or
+                        IMPERSONATE_PROXY_SESSION_POOL_MAX)
+  --connect-timeout CONNECT_TIMEOUT
+                        Upstream TCP/TLS connect timeout in seconds (default: 10.0 or
+                        IMPERSONATE_PROXY_CONNECT_TIMEOUT)
+  --read-timeout READ_TIMEOUT
+                        Upstream HTTP read timeout in seconds (default: 300.0 or
+                        IMPERSONATE_PROXY_READ_TIMEOUT)
   --ca-dir, -c CA_DIR   Directory to store/load CA certificate and key (default:
                         ~/.config/impersonate-proxy or IMPERSONATE_PROXY_CA_DIR)
   --debug, -d           Enable verbose debug logging (unredacts URLs/hosts in
@@ -100,10 +114,12 @@ options:
                         IMPERSONATE_PROXY_QUIET=true
 ```
 
-The three header-mode flags are mutually exclusive. The default mode is
-`--enrich-headers`. Equivalent environment variables are
-`IMPERSONATE_PROXY_HEADER_MODE` (one of `passthrough`, `enrich`, `override`) and
-`IMPERSONATE_PROXY_STRIP_CLIENT_LEAK_HEADERS` (boolean).
+The two header-mode flags are mutually exclusive. The default mode is
+`--cffi-defaults`. Equivalent environment variables are
+`IMPERSONATE_PROXY_HEADER_MODE` (one of `passthrough`, `cffi-defaults`),
+`IMPERSONATE_PROXY_STRIP_CLIENT_LEAK_HEADERS`, `IMPERSONATE_PROXY_UPSTREAM_PROXY`,
+`IMPERSONATE_PROXY_SESSION_POOL_MAX`, `IMPERSONATE_PROXY_CONNECT_TIMEOUT`, and
+`IMPERSONATE_PROXY_READ_TIMEOUT`.
 
 ---
 

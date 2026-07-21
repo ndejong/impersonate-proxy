@@ -11,6 +11,13 @@ HTTP/HTTPS proxy that impersonates browser TLS fingerprints using [curl_cffi](ht
 > [!NOTE]
 > This project started as a fork of [hauxir/tls-impersonate-proxy](https://github.com/hauxir/tls-impersonate-proxy) and has now evolved beyond a pull request to merge.  This **impersonate-proxy** project is maintained at [psaintelligence/impersonate-proxy](https://github.com/psaintelligence/impersonate-proxy).
 
+### Design Philosophy
+
+`impersonate-proxy` does **not** attempt to manually re-implement browser headers or replicate `curl-impersonate` in Python. Instead, it acts as a lightweight adapter:
+- **Strips** conflicting non-browser client headers (e.g. `User-Agent: python-httpx`) so native `curl-impersonate` defaults shine through.
+- **Preserves** request payload, auth, and shape semantics (`Cookie`, `Authorization`, `Host`, `Sec-Fetch-*` for XHR).
+- **Delegates** all browser TLS fingerprinting and header generation directly to `curl-impersonate` via `curl_cffi`.
+
 Pypi: [pypi.org/project/impersonate-proxy](https://pypi.org/project/impersonate-proxy/)
 
 GHCR: [github.com/psaintelligence/impersonate-proxy/pkgs/container](https://github.com/psaintelligence/impersonate-proxy/pkgs/container/impersonate-proxy)

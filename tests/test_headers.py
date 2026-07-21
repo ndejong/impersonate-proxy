@@ -1,7 +1,6 @@
 """Unit tests for header preparation modes and client-leak stripping."""
 
 import logging
-from typing import Any
 
 import pytest
 
@@ -25,22 +24,23 @@ def client_headers_minimal() -> dict[str, str]:
 
 @pytest.fixture
 def client_headers_searxng_like() -> dict[str, str]:
-    """Headers resembling a SearXNG outgoing request (with bot-tell signals)."""
+    """Headers resembling a SearXNG outgoing XHR request (with bot-tell signals)."""
     return {
         "Host": "example.com",
         "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0",
         "Accept": "*/*",
         "Accept-Encoding": "gzip, deflate",
+        "Accept-Language": "en-US,en;q=0.9",
         "Cache-Control": "no-cache",
         "DNT": "1",
         "Connection": "keep-alive",
-        "Accept-Language": "en-US,en;q=0.9",
+        "Sec-Fetch-Mode": "cors",
     }
 
 
 @pytest.fixture
 def client_headers_with_proxy_leak() -> dict[str, str]:
-    """Client headers carrying middlebox/identity-leak signals."""
+    """Client headers carrying middlebox/identity-leak signals plus request-specific headers."""
     return {
         "Host": "example.com",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
@@ -66,163 +66,144 @@ def client_headers_with_proxy_leak() -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# passthrough mode
+# cffi-defaults mode
 # ---------------------------------------------------------------------------
 
 
-class TestPassthroughMode:
-    def test_returns_headers_untouched(self, client_headers_minimal):
-        out = proxy._prepare_headers(client_headers_minimal, "chrome", mode="passthrough")
-        assert out == client_headers_minimal
-        # Should be a copy, not the same object
-        assert out is not client_headers_minimal
+class TestCffiDefaultsMode:
+    """cffi-defaults strips browser-shape headers so curl_cffi injects the rest,
+    drops bot-tell headers, and preserves request-specific + shape-dependent headers."""
 
-    def test_does_not_replace_non_browser_ua(self, client_headers_minimal):
-        out = proxy._prepare_headers(client_headers_minimal, "chrome", mode="passthrough")
-        assert out["User-Agent"] == "python-httpx/0.27.0"
+    def test_strips_browser_shape_headers(self, client_headers_searxng_like):
+        out = proxy._cffi_defaults_headers(client_headers_searxng_like)
+        for h in [
+            "User-Agent",
+            "Accept-Encoding",
+            "Upgrade-Insecure-Requests",
+            "Sec-Fetch-User",
+            "Priority",
+            "TE",
+            "Sec-Ch-Ua",
+            "Sec-Ch-Ua-Mobile",
+            "Sec-Ch-Ua-Platform",
+        ]:
+            assert h not in out, f"{h} should be stripped so curl_cffi injects it"
+            assert h.lower() not in {k.lower() for k in out}, f"{h} (any case) should be stripped"
 
-    def test_does_not_inject_sec_headers(self, client_headers_minimal):
-        out = proxy._prepare_headers(client_headers_minimal, "chrome", mode="passthrough")
-        assert "Sec-Fetch-Dest" not in out
-        assert "Sec-Ch-Ua" not in out
+    def test_drops_bot_tell_headers(self, client_headers_searxng_like):
+        out = proxy._cffi_defaults_headers(client_headers_searxng_like)
+        for h in ["Cache-Control", "DNT", "Connection"]:
+            assert h not in out, f"{h} should be dropped as a bot tell"
+            assert h.lower() not in {k.lower() for k in out}
 
-
-# ---------------------------------------------------------------------------
-# enrich mode
-# ---------------------------------------------------------------------------
-
-
-class TestEnrichMode:
-    def test_replaces_non_browser_ua(self, client_headers_minimal):
-        out = proxy._prepare_headers(client_headers_minimal, "chrome", mode="enrich")
-        assert out["User-Agent"] != "python-httpx/0.27.0"
-        assert "Chrome/146" in out["User-Agent"]
-
-    def test_preserves_client_accept(self, client_headers_minimal):
-        out = proxy._prepare_headers(client_headers_minimal, "chrome", mode="enrich")
-        # Accept was already set — additive mode must preserve it
-        assert out["Accept"] == "*/*"
-
-    def test_preserves_client_accept_encoding(self, client_headers_minimal):
-        out = proxy._prepare_headers(client_headers_minimal, "chrome", mode="enrich")
-        # Accept-Encoding was already set — must NOT be replaced in enrich mode
-        assert out["Accept-Encoding"] == "gzip, deflate"
-
-    def test_injects_missing_sec_headers(self, client_headers_minimal):
-        out = proxy._prepare_headers(client_headers_minimal, "chrome", mode="enrich")
-        assert out["Sec-Fetch-Dest"] == "document"
-        assert out["Sec-Fetch-Mode"] == "navigate"
-        assert out["Sec-Fetch-Site"] == "none"
-        # Modern curl-impersonate signatures emit Sec-Ch-Ua starting with the
-        # "Chromium" brand token, not "Not_A Brand" as older Chrome did.
-        assert out["Sec-Ch-Ua"].startswith('"Chromium"')
-        assert 'v="146"' in out["Sec-Ch-Ua"]
-
-    def test_firefox_profile_no_sec_ch_ua(self, client_headers_minimal):
-        out = proxy._prepare_headers(client_headers_minimal, "firefox", mode="enrich")
-        # Firefox does not send Sec-Ch-Ua
-        assert "Sec-Ch-Ua" not in out
-        assert "Firefox/147" in out["User-Agent"]
-
-    def test_firefox_accept_encoding_includes_zstd_when_missing(self, client_headers_minimal):
-        # Modern Firefox (>=135) also advertises zstd; remove client Accept-Encoding
-        # to verify the firefox default is injected with zstd included.
-        headers = {k: v for k, v in client_headers_minimal.items() if k != "Accept-Encoding"}
-        out = proxy._prepare_headers(headers, "firefox", mode="enrich")
-        assert out["Accept-Encoding"] == "gzip, deflate, br, zstd"
-
-    def test_chrome_accept_encoding_includes_zstd_when_missing(self):
-        headers = {"Host": "example.com", "User-Agent": "curl/8.0"}
-        out = proxy._prepare_headers(headers, "chrome", mode="enrich")
-        assert out["Accept-Encoding"] == "gzip, deflate, br, zstd"
-
-    def test_real_browser_ua_is_preserved(self):
-        """A real browser UA must not be replaced."""
-        headers = {"Host": "example.com", "User-Agent": "Mozilla/5.0 (Macintosh) Safari/605"}
-        out = proxy._prepare_headers(headers, "chrome", mode="enrich")
-        assert out["User-Agent"] == "Mozilla/5.0 (Macintosh) Safari/605"
-
-    def test_does_not_drop_client_cache_control(self, client_headers_searxng_like):
-        out = proxy._prepare_headers(client_headers_searxng_like, "chrome", mode="enrich")
-        # enrich mode is additive only — must NOT drop nav-mismatch tells
-        assert out.get("Cache-Control") == "no-cache"
-        assert out.get("DNT") == "1"
-        assert out.get("Connection") == "keep-alive"
-
-
-# ---------------------------------------------------------------------------
-# override mode
-# ---------------------------------------------------------------------------
-
-
-class TestOverrideMode:
-    def test_replaces_accept(self, client_headers_searxng_like):
-        out = proxy._prepare_headers(client_headers_searxng_like, "chrome", mode="override")
-        # '*/*' must be overwritten with the browser Accept value
-        assert out["Accept"] != "*/*"
-        assert "text/html" in out["Accept"]
-
-    def test_replaces_accept_encoding_chrome(self, client_headers_searxng_like):
-        out = proxy._prepare_headers(client_headers_searxng_like, "chrome", mode="override")
-        assert out["Accept-Encoding"] == "gzip, deflate, br, zstd"
-
-    def test_replaces_accept_encoding_firefox(self, client_headers_searxng_like):
-        out = proxy._prepare_headers(client_headers_searxng_like, "firefox", mode="override")
-        # Modern Firefox (>=135) advertises zstd alongside gzip/deflate/br.
-        assert out["Accept-Encoding"] == "gzip, deflate, br, zstd"
-
-    def test_drops_cache_control(self, client_headers_searxng_like):
-        out = proxy._prepare_headers(client_headers_searxng_like, "chrome", mode="override")
-        assert "Cache-Control" not in out
-        assert "cache-control" not in {k.lower() for k in out}
-
-    def test_drops_dnt(self, client_headers_searxng_like):
-        out = proxy._prepare_headers(client_headers_searxng_like, "chrome", mode="override")
-        assert "DNT" not in out
-        assert "dnt" not in {k.lower() for k in out}
-
-    def test_drops_connection(self, client_headers_searxng_like, caplog):
+    def test_drops_connection_with_warning(self, client_headers_searxng_like, caplog):
         with caplog.at_level(logging.WARNING):
-            out = proxy._prepare_headers(client_headers_searxng_like, "chrome", mode="override")
+            out = proxy._cffi_defaults_headers(client_headers_searxng_like)
         assert "Connection" not in out
         assert "connection" not in {k.lower() for k in out}
-        # A warning should have been logged
-        assert any("Connection" in rec.getMessage() for rec in caplog.records)
+        assert any("Connection" in rec.getMessage() for rec in caplog.records), (
+            "expected a warning when Connection is dropped"
+        )
 
-    def test_replaces_sec_headers(self, client_headers_searxng_like):
-        out = proxy._prepare_headers(client_headers_searxng_like, "chrome", mode="override")
-        assert out["Sec-Fetch-Dest"] == "document"
-        assert out["Sec-Ch-Ua"].startswith('"Chromium"')
-        assert 'v="146"' in out["Sec-Ch-Ua"]
-
-    def test_preserves_authorization_cookie_referer(self, client_headers_with_proxy_leak):
-        out = proxy._prepare_headers(client_headers_with_proxy_leak, "chrome", mode="override")
+    def test_preserves_request_specific_headers(self, client_headers_with_proxy_leak):
+        out = proxy._cffi_defaults_headers(client_headers_with_proxy_leak)
+        assert out["Host"] == "example.com"
         assert out["Authorization"] == "Bearer my-token"
         assert out["Cookie"] == "session=abc"
         assert out["Referer"] == "https://ref.example/"
-
-    def test_preserves_content_type_and_cache_conditionals(self, client_headers_with_proxy_leak):
-        out = proxy._prepare_headers(client_headers_with_proxy_leak, "chrome", mode="override")
         assert out["Content-Type"] == "application/json"
         assert out["If-None-Match"] == '"v1"'
 
-    def test_replaces_real_browser_ua_with_profile(self, client_headers_searxng_like):
-        """Override mode replaces even valid browser UAs to match the impersonated profile."""
-        out = proxy._prepare_headers(client_headers_searxng_like, "chrome", mode="override")
-        # The original was Firefox 115; override mode must install Chrome 146 UA
-        assert "Chrome/146" in out["User-Agent"]
-        assert "Firefox/115" not in out["User-Agent"]
+    def test_preserves_request_specific_body_and_range_headers(self):
+        headers = {
+            "Host": "example.com",
+            "User-Agent": "curl/8.0",
+            "Origin": "https://app.example",
+            "Content-Type": "application/json",
+            "Content-Length": "42",
+            "If-Match": '"v2"',
+            "If-Modified-Since": "Wed, 21 Oct 2015 07:28:00 GMT",
+            "If-Unmodified-Since": "Wed, 21 Oct 2015 07:28:00 GMT",
+            "If-None-Match": '"v1"',
+            "Range": "bytes=0-1023",
+        }
+        out = proxy._cffi_defaults_headers(headers)
+        for k, v in headers.items():
+            if k == "User-Agent":
+                continue  # stripped
+            assert out[k] == v, f"{k} should be preserved"
 
-    def test_override_preserves_custom_x_headers(self):
+    def test_preserves_client_sec_fetch_headers(self, client_headers_searxng_like):
+        out = proxy._cffi_defaults_headers(client_headers_searxng_like)
+        # SearXNG-like fixture sends Sec-Fetch-Mode: cors — must be preserved so the
+        # request keeps its XHR shape; curl_cffi cannot infer it.
+        assert out["Sec-Fetch-Mode"] == "cors"
+        # Sec-Fetch-Dest / Sec-Fetch-Site are also client-owned shape signals.
+        headers = dict(client_headers_searxng_like)
+        headers["Sec-Fetch-Dest"] = "empty"
+        headers["Sec-Fetch-Site"] = "same-origin"
+        out = proxy._cffi_defaults_headers(headers)
+        assert out["Sec-Fetch-Dest"] == "empty"
+        assert out["Sec-Fetch-Site"] == "same-origin"
+        assert out["Sec-Fetch-Mode"] == "cors"
+
+    def test_preserves_client_accept(self, client_headers_searxng_like):
+        out = proxy._cffi_defaults_headers(client_headers_searxng_like)
+        # Accept is shape-dependent (nav=text/html, XHR=*/* or application/json); the
+        # client knows. Preserve it so we don't force curl_cffi's nav-style default
+        # onto XHR requests.
+        assert out["Accept"] == "*/*"
+
+    def test_strips_literal_star_accept_language(self):
+        headers = {
+            "Host": "example.com",
+            "User-Agent": "curl/8.0",
+            "Accept-Language": "*",
+        }
+        out = proxy._cffi_defaults_headers(headers)
+        assert "Accept-Language" not in out
+        assert "accept-language" not in {k.lower() for k in out}
+
+    def test_preserves_real_accept_language(self, client_headers_searxng_like):
+        out = proxy._cffi_defaults_headers(client_headers_searxng_like)
+        assert out["Accept-Language"] == "en-US,en;q=0.9"
+
+    def test_preserves_custom_x_headers(self):
         headers = {
             "Host": "example.com",
             "User-Agent": "python-requests/2.31",
             "X-API-Key": "sk-foo",
-            "X-Custom-Header": "value",
+            "X-Custom-App-Header": "value",
         }
-        out = proxy._prepare_headers(headers, "chrome", mode="override")
+        out = proxy._cffi_defaults_headers(headers)
         assert out["X-API-Key"] == "sk-foo"
-        assert out["X-Custom-Header"] == "value"
+        assert out["X-Custom-App-Header"] == "value"
+        # User-Agent is stripped (curl_cffi injects the profile UA)
+        assert "User-Agent" not in out
+
+    def test_returns_a_copy(self, client_headers_searxng_like):
+        out = proxy._cffi_defaults_headers(client_headers_searxng_like)
+        assert out is not client_headers_searxng_like
+        # Mutating the output must not affect the input.
+        out["X-Injected-By-Test"] = "1"
+        assert "X-Injected-By-Test" not in client_headers_searxng_like
+
+
+# ---------------------------------------------------------------------------
+# passthrough mode
+# ---------------------------------------------------------------------------
+
+
+def test_passthrough_mode_forwards_everything(client_headers_with_proxy_leak):
+    """In passthrough mode _do_request forwards client headers untouched (only the
+    _strip_leak_headers step may remove anything, and only when that flag is on)."""
+    # Reproduce the passthrough branch of _do_request directly.
+    out = dict(client_headers_with_proxy_leak)
+    assert out == client_headers_with_proxy_leak
+    assert out is not client_headers_with_proxy_leak
+    # Every original header is preserved, including bot tells and browser-shape headers.
+    for k, v in client_headers_with_proxy_leak.items():
+        assert out[k] == v
 
 
 # ---------------------------------------------------------------------------
@@ -318,17 +299,16 @@ class TestStripClientLeakHeaders:
 
 
 # ---------------------------------------------------------------------------
-# end-to-end: _prepare_headers + _strip_leak_headers
+# end-to-end: _cffi_defaults_headers + _strip_leak_headers
 # ---------------------------------------------------------------------------
 
 
-class TestCombinedModesAndStrip:
-    def test_override_plus_strip(self, client_headers_with_proxy_leak):
-        prepared = proxy._prepare_headers(client_headers_with_proxy_leak, "chrome", mode="override")
+class TestCombinedCffiDefaultsAndStrip:
+    def test_cffi_defaults_plus_strip(self, client_headers_with_proxy_leak):
+        prepared = proxy._cffi_defaults_headers(client_headers_with_proxy_leak)
         out = proxy._strip_leak_headers(prepared)
-        # Override replaced Accept and Accept-Encoding
-        assert "text/html" in out["Accept"]
-        assert out["Accept-Encoding"] == "gzip, deflate, br, zstd"
+        # cffi-defaults stripped User-Agent (curl_cffi injects it)
+        assert "User-Agent" not in out
         # Strip removed middlebox-chain + tracing leak headers
         for leak in [
             "X-Forwarded-For",
@@ -345,76 +325,16 @@ class TestCombinedModesAndStrip:
         # that should surface, not be silently dropped.
         for cdn_h in ["X-Real-IP", "True-Client-IP", "CF-Connecting-IP", "Fastly-Client-IP", "X-Cluster-Client-IP"]:
             assert out.get(cdn_h) == "10.0.0.1", f"CDN-ingress header {cdn_h} should be forwarded, not stripped"
-        # Sensitive auth + cookie preserved by strip + override
+        # Sensitive auth + cookie preserved by strip + cffi-defaults
         assert out["Authorization"] == "Bearer my-token"
         assert out["Cookie"] == "session=abc"
 
-    def test_enrich_plus_strip_preserves_client_accept(self, client_headers_with_proxy_leak):
-        prepared = proxy._prepare_headers(client_headers_with_proxy_leak, "chrome", mode="enrich")
-        out = proxy._strip_leak_headers(prepared)
-        # Enrich must preserve client Accept (was missing → browser default injected)
-        # The fixture had no Accept, so enrich injects the default
-        assert "text/html" in out["Accept"]
-        # Strip removed leak headers
-        assert "X-Forwarded-For" not in out
-        assert "Via" not in out
-
     def test_passthrough_plus_strip_only_drops_leak(self, client_headers_with_proxy_leak):
-        prepared = proxy._prepare_headers(client_headers_with_proxy_leak, "chrome", mode="passthrough")
+        # Passthrough branch: dict(headers) then _strip_leak_headers.
+        prepared = dict(client_headers_with_proxy_leak)
         out = proxy._strip_leak_headers(prepared)
-        # Passthrough: no browser headers injected
-        assert "Sec-Fetch-Dest" not in out
+        # Passthrough: no browser headers injected, client UA preserved
+        assert "Chrome/120" in out["User-Agent"]
         # Strip still removes leak signals
         assert "X-Forwarded-For" not in out
         assert "Via" not in out
-        # Client UA preserved (passthrough mode)
-        assert "Chrome/120" in out["User-Agent"]
-
-
-# ---------------------------------------------------------------------------
-# _is_non_browser_ua
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "ua,expected",
-    [
-        ("", True),
-        ("Mozilla/5.0 (X11) Gecko/20100101 Firefox/147.0", False),
-        ("Mozilla/5.0 (Windows NT 10.0) Chrome/146.0 Safari/537.36", False),
-        ("curl/8.0", True),
-        ("python-requests/2.31", True),
-        ("python-httpx/0.27.0", True),
-        ("aiohttp/3.9", True),
-        ("Wget/1.21", True),
-        ("Go-http-client/1.1", True),
-        ("PostmanRuntime/7.32", True),
-        ("okhttp/4.10", False),
-        ("MyCustomApp/1.0", False),
-    ],
-)
-def test_is_non_browser_ua(ua: str, expected: bool):
-    assert proxy._is_non_browser_ua(ua) is expected
-
-
-# ---------------------------------------------------------------------------
-# _profile_defaults
-# ---------------------------------------------------------------------------
-
-
-def test_profile_defaults_chrome():
-    defaults = proxy._profile_defaults("chrome")
-    assert "Sec-Ch-Ua" in defaults
-    assert defaults["Accept-Encoding"] == "gzip, deflate, br, zstd"
-
-
-def test_profile_defaults_fireix():
-    defaults = proxy._profile_defaults("firefox131")
-    # Any firefox-prefixed profile resolves to the firefox defaults
-    assert "Sec-Ch-Ua" not in defaults
-    assert defaults["Accept-Encoding"] == "gzip, deflate, br, zstd"
-
-
-def test_profile_defaults_unknown_falls_back_to_chrome():
-    defaults: dict[str, Any] = proxy._profile_defaults("safari")
-    assert "Sec-Ch-Ua" in defaults  # chrome set returned

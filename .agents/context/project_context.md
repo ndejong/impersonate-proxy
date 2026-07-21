@@ -30,7 +30,11 @@ The proxy operates in two primary modes depending on whether it receives plain H
    - The decrypted requests inside the secure tunnel are read, and the proxy forwards them using `curl_cffi` with browser TLS fingerprinting to the upstream server.
    - If the root CA fails to initialize or trust store installation fails, the proxy falls back to a raw TCP tunnel (relaying raw bytes back and forth) without TLS impersonation.
 
-3. **Concurrency**:
+3. **Header Delegation Philosophy**:
+   - Rather than manually replicating browser headers in Python, the proxy delegates header generation directly to `curl-impersonate` / `curl_cffi`.
+   - In `cffi-defaults` mode, the proxy acts as a thin adapter: it strips client-supplied headers that would override `curl_cffi` defaults (`User-Agent`, `Sec-Ch-Ua-*`, `Accept-Encoding`, `Priority`, `TE`), drops bot-tells (`DNT`, `Cache-Control`), and preserves request payload/auth semantics (`Cookie`, `Authorization`, `Host`, `Sec-Fetch-*` for XHR).
+
+4. **Concurrency**:
    - The server uses `ThreadingMixIn` combined with `HTTPServer` to handle multiple client connections concurrently.
    - Certificate caching is synchronized with threading locks to optimize TLS handshake speed for repeated hosts.
 

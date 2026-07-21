@@ -48,12 +48,17 @@ class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 @pytest.fixture(
     params=[
         # Each param tuple: (impersonate, header_mode, strip_leak_headers)
-        ("chrome", "enrich", False),
-        ("firefox", "enrich", False),
-        ("chrome", "override", True),
-        ("firefox", "override", True),
+        ("chrome", "cffi-defaults", False),
+        ("firefox", "cffi-defaults", False),
+        ("chrome", "cffi-defaults", True),
+        ("firefox", "cffi-defaults", True),
     ],
-    ids=["chrome-enrich", "firefox-enrich", "chrome-override+strip", "firefox-override+strip"],
+    ids=[
+        "chrome-cffi-defaults",
+        "firefox-cffi-defaults",
+        "chrome-cffi-defaults+strip",
+        "firefox-cffi-defaults+strip",
+    ],
 )
 def proxy_server(request) -> Generator[tuple[str, str, str, str, bool], None, None]:
     """
@@ -61,8 +66,9 @@ def proxy_server(request) -> Generator[tuple[str, str, str, str, bool], None, No
 
     Parameterised across:
       * impersonation profile (chrome, firefox)
-      * header mode (enrich, override)
-      * client-leak stripping (only enabled for the override variants)
+      * header mode (cffi-defaults)
+      * client-leak stripping (off and on; the +strip variants inject SearXNG-like
+        leak headers to exercise the strip path)
 
     Yields (proxy_url, ca_cert_path, impersonate_profile, header_mode, strip_leak).
     """
@@ -115,9 +121,9 @@ def _get(
     This emulates a real-world plain client (which does not provide browser headers).
 
     When ``inject_leak_headers`` is True, simulate a SearXNG/httpx client by adding
-    middlebox/identity-leak headers (X-Forwarded-*, Forwarded, Via, X-Request-ID, etc.)
+    middlebox/identity-leak headers (XForwarded-*, Forwarded, Via, X-Request-ID, etc.)
     plus navigation-mismatch tells (Cache-Control, DNT, Connection). Used to verify
-    that --override-headers + --strip-client-leak-headers actually strip them.
+    that --cffi-defaults + --strip-client-leak-headers actually strip them.
     """
     scheme = url.split("://")[0]
     proxies = {scheme: proxy_url}
@@ -214,9 +220,9 @@ class TestFingerprintBypass:
     Verify that the proxy defeats TLS fingerprinting and bot-detection systems.
 
     The proxy_server fixture parameterises over (impersonate, header_mode, strip_leak):
-    by default the suite runs four variants — chrome/firefox under enrich mode, and
-    chrome/firefox under override+strip mode. The override variant injects SearXNG-like
-    leak headers via _get() to prove the strip path actually drops them.
+    by default the suite runs four variants — chrome/firefox under cffi-defaults mode,
+    and chrome/firefox under cffi-defaults+strip mode. The +strip variant injects
+    SearXNG-like leak headers via _get() to prove the strip path actually drops them.
     """
 
     def test_nowsecure_nl(self, proxy_server: tuple[str, str, str, str, bool]) -> None:
@@ -373,3 +379,112 @@ class TestFingerprintBypass:
         _assert_status(url, resp.status_code, unproxied_status, impersonate, header_mode)
         body = resp.text.lower()
         assert "creep" in body, "Expected 'creep' in response body"
+
+    def test_tls_peet_ws_cffi_defaults_intact(self, proxy_server: tuple[str, str, str, str, bool]) -> None:
+        """Live regression guard: assert curl_cffi's full browser header set arrives at
+        tls.peet.ws through the proxy when running in cffi-defaults mode.
+
+        Design rationale:
+          * **Accept is PRESERVED from the client** — it is shape-dependent
+            (nav=text/html, XHR=*/* or application/json) and the client knows which
+            shape it is sending. Stripping would force curl_cffi's nav-style default
+            onto XHR requests, which is itself a bot tell.
+          * **User-Agent is STRIPPED** — curl_cffi owns it. Forwarding a non-browser
+            UA (python-httpx) would silently override (and break) impersonation.
+          * **Sec-Fetch-Mode is PRESERVED from the client** — SearXNG correctly sends
+            `cors` for XHR; curl_cffi cannot infer the request shape.
+          * **Cache-Control / DNT are DROPPED** — bot tells; real browser nav requests
+            never send them.
+
+        Sends a SearXNG-like request (UA=python-httpx, Accept: */*,
+        Accept-Encoding: gzip, deflate, Cache-Control: no-cache, DNT: 1,
+        sec-fetch-mode: cors) and asserts the request that arrives at tls.peet.ws
+        carries the impersonation profile's browser headers, not the client's bot tells.
+        Parameterised across chrome + firefox variants via the proxy_server fixture.
+        """
+        proxy_url, ca_cert_path, impersonate, header_mode, strip_leak = proxy_server
+        # SearXNG-like client headers + bot tells that cffi-defaults should strip.
+        client_headers = {
+            "User-Agent": "python-httpx/0.27.0",
+            "Accept": "*/*",
+            "Accept-Encoding": "gzip, deflate",
+            "Cache-Control": "no-cache",
+            "DNT": "1",
+            "Sec-Fetch-Mode": "cors",
+        }
+        proxies = {"https": proxy_url}
+        resp = requests.get(
+            "https://tls.peet.ws/api/all",
+            proxies=proxies,
+            verify=ca_cert_path,
+            headers=client_headers,
+            timeout=30,
+        )
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text[:200]}"
+
+        data = resp.json()
+
+        # Collect all HTTP/2 sent-frame headers (lowercased keys). tls.peet.ws returns
+        # the request HEADERS frames in data["http2"]["sent_frames"]; each HEADERS
+        # frame's "headers" field is a list of "key: value" strings.
+        sent_headers: dict[str, str] = {}
+        for frame in data.get("http2", {}).get("sent_frames", []):
+            if frame.get("frame_type") != "HEADERS":
+                continue
+            for entry in frame.get("headers") or []:
+                if ": " not in entry:
+                    continue
+                k, v = entry.split(": ", 1)
+                sent_headers[k.lower()] = v
+        assert sent_headers, "Expected HEADERS frames in tls.peet.ws /api/all response"
+
+        # --- User-Agent: stripped by cffi-defaults, curl_cffi injects profile UA ---
+        ua = data.get("user_agent", "") or sent_headers.get("user-agent", "")
+        assert ua, "Expected non-empty user_agent in tls.peet.ws response"
+        if impersonate.startswith("firefox"):
+            assert "Firefox/147" in ua, f"Expected Firefox/147 UA, got {ua!r}"
+            # Firefox does not send Sec-Ch-Ua-* headers.
+            assert "sec-ch-ua" not in sent_headers, "Firefox should not send Sec-Ch-Ua"
+            assert "sec-ch-ua-mobile" not in sent_headers
+            assert "sec-ch-ua-platform" not in sent_headers
+        else:
+            assert "Chrome/146.0.0.0" in ua, f"Expected Chrome/146 UA, got {ua!r}"
+            assert "Macintosh" in ua, f"Expected macOS UA (curl-impersonate signature), got {ua!r}"
+            # curl_cffi injects the full sec-ch-ua-* set for Chrome. tls.peet.ws
+            # returns these header values with double-quotes escaped as \", so
+            # normalise before asserting.
+            assert "sec-ch-ua" in sent_headers, "sec-ch-ua should be injected by curl_cffi"
+            sec_ch_ua = sent_headers["sec-ch-ua"].replace('\\"', '"')
+            assert '"Chromium";v="146"' in sec_ch_ua, f"Expected Chromium v=146 in sec-ch-ua, got {sec_ch_ua!r}"
+            assert sent_headers.get("sec-ch-ua-mobile") == "?0"
+            sec_ch_ua_platform = sent_headers.get("sec-ch-ua-platform", "")
+            assert "macOS" in sec_ch_ua_platform, (
+                f"Expected macOS platform in sec-ch-ua-platform, got {sec_ch_ua_platform!r}"
+            )
+
+        # --- curl_cffi injects these (client sent bot tells / wrong values that were stripped) ---
+        assert sent_headers.get("accept-encoding") == "gzip, deflate, br, zstd", (
+            f"Expected curl_cffi's accept-encoding, got {sent_headers.get('accept-encoding')!r}"
+        )
+        assert sent_headers.get("priority") == "u=0, i", (
+            f"Expected priority 'u=0, i', got {sent_headers.get('priority')!r}"
+        )
+        assert sent_headers.get("upgrade-insecure-requests") == "1", (
+            f"Expected upgrade-insecure-requests '1', got {sent_headers.get('upgrade-insecure-requests')!r}"
+        )
+
+        # --- Bot tells MUST NOT be forwarded (cffi-defaults drops them) ---
+        assert "cache-control" not in sent_headers, "Cache-Control should be dropped by cffi-defaults"
+        assert "dnt" not in sent_headers, "DNT should be dropped by cffi-defaults"
+
+        # --- Shape-dependent headers PRESERVED from the client ---
+        assert sent_headers.get("accept") == "*/*", (
+            f"Accept should be preserved from client (*/*), got {sent_headers.get('accept')!r}"
+        )
+        assert sent_headers.get("sec-fetch-mode") == "cors", (
+            f"Sec-Fetch-Mode should be preserved from client (cors), got {sent_headers.get('sec-fetch-mode')!r}"
+        )
+
+        logger.info(
+            f"[tls.peet.ws/api/all] cffi-defaults header-set verified ({impersonate}/{header_mode}+strip={strip_leak}): UA={ua[:40]}..."
+        )
