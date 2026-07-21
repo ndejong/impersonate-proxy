@@ -2,7 +2,7 @@
 
 ## The `_dev/` Directory Does Not Exist for Agent Purposes
 
-**⚠️ CRITICAL RULE: NEVER read, write, reference, or act on anything inside `_dev/`.**
+**⚠️ CRITICAL RULE: NEVER read, write, reference, or act on anything inside `_dev/`, unless you are express instruction to do so.  The only time to can use `_dev` is when you are told by the user.**
 
 The `_dev/` directory at the repository root is an **untracked developer scratch space** used for local experimentation, throwaway scripts, data dumps, and personal notes. Its contents are never part of the project and carry no authority.
 
