@@ -188,7 +188,11 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                 break
 
         except Exception as e:
-            logger.error(f"MITM handler error: {e}")
+            err_msg = str(e)
+            if isinstance(e, (BrokenPipeError, ConnectionResetError)) or "curl: (23)" in err_msg:
+                logger.debug(f"MITM client disconnected mid-stream: {e}")
+            else:
+                logger.error(f"MITM handler error: {e}")
         finally:
             if rfile:
                 with contextlib.suppress(Exception):
@@ -276,6 +280,12 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             self.wfile.flush()
             if not self.ctx.config.quiet:
                 logger.info(f"HTTP Proxy {self.command} {self.ctx.show_identifying(url)} -> {resp.status_code}")
+        except Exception as e:
+            err_msg = str(e)
+            if isinstance(e, (BrokenPipeError, ConnectionResetError)) or "curl: (23)" in err_msg:
+                logger.debug(f"HTTP Proxy client disconnected mid-stream: {e}")
+            else:
+                logger.error(f"HTTP Proxy handler error for {self.ctx.show_identifying(url)}: {e}")
         finally:
             resp.close()
 
