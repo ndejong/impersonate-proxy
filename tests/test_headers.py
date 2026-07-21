@@ -23,8 +23,8 @@ def client_headers_minimal() -> dict[str, str]:
 
 
 @pytest.fixture
-def client_headers_searxng_like() -> dict[str, str]:
-    """Headers resembling a SearXNG outgoing XHR request (with bot-tell signals)."""
+def client_headers_non_browser_like() -> dict[str, str]:
+    """Headers resembling a non-browser (httpx/aiohttp-style) XHR client (with bot-tell signals)."""
     return {
         "Host": "example.com",
         "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0",
@@ -74,8 +74,8 @@ class TestCffiDefaultsMode:
     """cffi-defaults strips browser-shape headers so curl_cffi injects the rest,
     drops bot-tell headers, and preserves request-specific + shape-dependent headers."""
 
-    def test_strips_browser_shape_headers(self, client_headers_searxng_like):
-        out = proxy._cffi_defaults_headers(client_headers_searxng_like)
+    def test_strips_browser_shape_headers(self, client_headers_non_browser_like):
+        out = proxy._cffi_defaults_headers(client_headers_non_browser_like)
         for h in [
             "User-Agent",
             "Accept-Encoding",
@@ -90,15 +90,15 @@ class TestCffiDefaultsMode:
             assert h not in out, f"{h} should be stripped so curl_cffi injects it"
             assert h.lower() not in {k.lower() for k in out}, f"{h} (any case) should be stripped"
 
-    def test_drops_bot_tell_headers(self, client_headers_searxng_like):
-        out = proxy._cffi_defaults_headers(client_headers_searxng_like)
+    def test_drops_bot_tell_headers(self, client_headers_non_browser_like):
+        out = proxy._cffi_defaults_headers(client_headers_non_browser_like)
         for h in ["Cache-Control", "DNT", "Connection"]:
             assert h not in out, f"{h} should be dropped as a bot tell"
             assert h.lower() not in {k.lower() for k in out}
 
-    def test_drops_connection_with_warning(self, client_headers_searxng_like, caplog):
+    def test_drops_connection_with_warning(self, client_headers_non_browser_like, caplog):
         with caplog.at_level(logging.WARNING):
-            out = proxy._cffi_defaults_headers(client_headers_searxng_like)
+            out = proxy._cffi_defaults_headers(client_headers_non_browser_like)
         assert "Connection" not in out
         assert "connection" not in {k.lower() for k in out}
         assert any("Connection" in rec.getMessage() for rec in caplog.records), (
@@ -133,13 +133,13 @@ class TestCffiDefaultsMode:
                 continue  # stripped
             assert out[k] == v, f"{k} should be preserved"
 
-    def test_preserves_client_sec_fetch_headers(self, client_headers_searxng_like):
-        out = proxy._cffi_defaults_headers(client_headers_searxng_like)
-        # SearXNG-like fixture sends Sec-Fetch-Mode: cors — must be preserved so the
+    def test_preserves_client_sec_fetch_headers(self, client_headers_non_browser_like):
+        out = proxy._cffi_defaults_headers(client_headers_non_browser_like)
+        # Non-browser XHR fixture sends Sec-Fetch-Mode: cors — must be preserved so the
         # request keeps its XHR shape; curl_cffi cannot infer it.
         assert out["Sec-Fetch-Mode"] == "cors"
         # Sec-Fetch-Dest / Sec-Fetch-Site are also client-owned shape signals.
-        headers = dict(client_headers_searxng_like)
+        headers = dict(client_headers_non_browser_like)
         headers["Sec-Fetch-Dest"] = "empty"
         headers["Sec-Fetch-Site"] = "same-origin"
         out = proxy._cffi_defaults_headers(headers)
@@ -147,8 +147,8 @@ class TestCffiDefaultsMode:
         assert out["Sec-Fetch-Site"] == "same-origin"
         assert out["Sec-Fetch-Mode"] == "cors"
 
-    def test_preserves_client_accept(self, client_headers_searxng_like):
-        out = proxy._cffi_defaults_headers(client_headers_searxng_like)
+    def test_preserves_client_accept(self, client_headers_non_browser_like):
+        out = proxy._cffi_defaults_headers(client_headers_non_browser_like)
         # Accept is shape-dependent (nav=text/html, XHR=*/* or application/json); the
         # client knows. Preserve it so we don't force curl_cffi's nav-style default
         # onto XHR requests.
@@ -164,8 +164,8 @@ class TestCffiDefaultsMode:
         assert "Accept-Language" not in out
         assert "accept-language" not in {k.lower() for k in out}
 
-    def test_preserves_real_accept_language(self, client_headers_searxng_like):
-        out = proxy._cffi_defaults_headers(client_headers_searxng_like)
+    def test_preserves_real_accept_language(self, client_headers_non_browser_like):
+        out = proxy._cffi_defaults_headers(client_headers_non_browser_like)
         assert out["Accept-Language"] == "en-US,en;q=0.9"
 
     def test_preserves_custom_x_headers(self):
@@ -181,12 +181,12 @@ class TestCffiDefaultsMode:
         # User-Agent is stripped (curl_cffi injects the profile UA)
         assert "User-Agent" not in out
 
-    def test_returns_a_copy(self, client_headers_searxng_like):
-        out = proxy._cffi_defaults_headers(client_headers_searxng_like)
-        assert out is not client_headers_searxng_like
+    def test_returns_a_copy(self, client_headers_non_browser_like):
+        out = proxy._cffi_defaults_headers(client_headers_non_browser_like)
+        assert out is not client_headers_non_browser_like
         # Mutating the output must not affect the input.
         out["X-Injected-By-Test"] = "1"
-        assert "X-Injected-By-Test" not in client_headers_searxng_like
+        assert "X-Injected-By-Test" not in client_headers_non_browser_like
 
 
 # ---------------------------------------------------------------------------

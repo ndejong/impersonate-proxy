@@ -67,7 +67,7 @@ def proxy_server(request) -> Generator[tuple[str, str, str, str, bool], None, No
     Parameterised across:
       * impersonation profile (chrome, firefox)
       * header mode (cffi-defaults)
-      * client-leak stripping (off and on; the +strip variants inject SearXNG-like
+      * client-leak stripping (off and on; the +strip variants inject non-browser-client-like
         leak headers to exercise the strip path)
 
     Yields (proxy_url, ca_cert_path, impersonate_profile, header_mode, strip_leak).
@@ -120,7 +120,7 @@ def _get(
     Issue a GET request through the proxy using standard python-requests headers.
     This emulates a real-world plain client (which does not provide browser headers).
 
-    When ``inject_leak_headers`` is True, simulate a SearXNG/httpx client by adding
+    When ``inject_leak_headers`` is True, simulate a non-browser httpx-style client by adding
     middlebox/identity-leak headers (XForwarded-*, Forwarded, Via, X-Request-ID, etc.)
     plus navigation-mismatch tells (Cache-Control, DNT, Connection). Used to verify
     that --cffi-defaults + --strip-client-leak-headers actually strip them.
@@ -130,7 +130,7 @@ def _get(
 
     headers = None
     if inject_leak_headers:
-        # Mimic SearXNG outgoing request shape.
+        # Mimic a non-browser httpx-style outgoing request shape.
         headers = {
             "User-Agent": "python-httpx/0.27.0",
             "Accept": "*/*",
@@ -142,7 +142,7 @@ def _get(
             "X-Forwarded-For": "10.0.0.1",
             "X-Forwarded-Host": "internal.example",
             "Forwarded": "for=10.0.0.1;proto=https",
-            "Via": "1.1 searxng",
+            "Via": "1.1 some-app",
             "X-Request-ID": "test-abc",
             "X-Correlation-ID": "test-xyz",
         }
@@ -222,7 +222,7 @@ class TestFingerprintBypass:
     The proxy_server fixture parameterises over (impersonate, header_mode, strip_leak):
     by default the suite runs four variants — chrome/firefox under cffi-defaults mode,
     and chrome/firefox under cffi-defaults+strip mode. The +strip variant injects
-    SearXNG-like leak headers via _get() to prove the strip path actually drops them.
+    non-browser-client-like leak headers via _get() to prove the strip path actually drops them.
     """
 
     def test_nowsecure_nl(self, proxy_server: tuple[str, str, str, str, bool]) -> None:
@@ -391,19 +391,19 @@ class TestFingerprintBypass:
             onto XHR requests, which is itself a bot tell.
           * **User-Agent is STRIPPED** — curl_cffi owns it. Forwarding a non-browser
             UA (python-httpx) would silently override (and break) impersonation.
-          * **Sec-Fetch-Mode is PRESERVED from the client** — SearXNG correctly sends
-            `cors` for XHR; curl_cffi cannot infer the request shape.
+          * **Sec-Fetch-Mode is PRESERVED from the client** — a non-browser XHR
+            client correctly sends `cors` for XHR; curl_cffi cannot infer the request shape.
           * **Cache-Control / DNT are DROPPED** — bot tells; real browser nav requests
             never send them.
 
-        Sends a SearXNG-like request (UA=python-httpx, Accept: */*,
+        Sends a non-browser-client-like request (UA=python-httpx, Accept: */*,
         Accept-Encoding: gzip, deflate, Cache-Control: no-cache, DNT: 1,
         sec-fetch-mode: cors) and asserts the request that arrives at tls.peet.ws
         carries the impersonation profile's browser headers, not the client's bot tells.
         Parameterised across chrome + firefox variants via the proxy_server fixture.
         """
         proxy_url, ca_cert_path, impersonate, header_mode, strip_leak = proxy_server
-        # SearXNG-like client headers + bot tells that cffi-defaults should strip.
+        # Non-browser-client-like client headers + bot tells that cffi-defaults should strip.
         client_headers = {
             "User-Agent": "python-httpx/0.27.0",
             "Accept": "*/*",

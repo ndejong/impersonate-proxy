@@ -106,16 +106,16 @@ curl_cffi (with `default_headers=True`, the project's default) automatically inj
 1. **Strips** browser-shape headers the client should not own (`User-Agent`, `Sec-Ch-Ua`, `Sec-Ch-Ua-Mobile`, `Sec-Ch-Ua-Platform`, `Accept-Encoding`, `Upgrade-Insecure-Requests`, `Sec-Fetch-User`, `Priority`, `TE`) so curl_cffi's profile defaults shine through.
 2. **Drops** bot-tell headers (`Cache-Control`, `DNT`, `Connection` — the last with a warning because curl_cffi manages HTTP/2 connection state itself).
 3. **Strips** `Accept-Language` only when the client sent the literal `*` (a bot tell); real values like `en-US,en;q=0.9` are preserved.
-4. **Preserves** everything else: request-specific headers (`Host`, `Cookie`, `Authorization`, `Referer`, `Origin`, `Content-Type`, `Content-Length`, `If-Match`, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since`, `Range`) and shape-dependent headers curl_cffi cannot infer — `Accept` (nav vs XHR), `Sec-Fetch-Dest/Mode/Site`. SearXNG correctly sends `Sec-Fetch-Mode: cors` on its XHR requests; preserving it keeps the request XHR-shaped. Forcing curl_cffi's nav-style defaults onto an XHR request would itself be a bot tell.
+4. **Preserves** everything else: request-specific headers (`Host`, `Cookie`, `Authorization`, `Referer`, `Origin`, `Content-Type`, `Content-Length`, `If-Match`, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since`, `Range`) and shape-dependent headers curl_cffi cannot infer — `Accept` (nav vs XHR), `Sec-Fetch-Dest/Mode/Site`. A non-browser XHR client (e.g. httpx) correctly sends `Sec-Fetch-Mode: cors` on its XHR requests; preserving it keeps the request XHR-shaped. Forcing curl_cffi's nav-style defaults onto an XHR request would itself be a bot tell.
 
 The Chrome and Firefox header sets curl_cffi injects are sourced from the [curl-impersonate signature files](https://github.com/lexiforest/curl-impersonate/tree/main/tests/signatures) and track the latest default profiles (`chrome146`, `firefox147` as of curl_cffi >= 0.7). The proxy no longer hardcodes them.
 
 ### Choosing a mode
 
-**cffi-defaults (default)** — best for almost all clients, including **SearXNG**. SearXNG (httpx-based) sends `Accept-Encoding: gzip, deflate` (no `br`/`zstd`), `Cache-Control: no-cache`, `DNT: 1`, and a `python-httpx` User-Agent. cffi-defaults strips all of those and lets curl_cffi inject the correct Chrome/Firefox equivalents, while preserving SearXNG's `Accept: */*` and `Sec-Fetch-Mode: cors` so the request keeps its XHR shape.
+**cffi-defaults (default)** — best for almost all clients, including **non-browser httpx-style clients**. Such a client sends `Accept-Encoding: gzip, deflate` (no `br`/`zstd`), `Cache-Control: no-cache`, `DNT: 1`, and a `python-httpx` User-Agent. cffi-defaults strips all of those and lets curl_cffi inject the correct Chrome/Firefox equivalents, while preserving the client's `Accept: */*` and `Sec-Fetch-Mode: cors` so the request keeps its XHR shape.
 
 ```bash
-# SearXNG recommended configuration
+# Recommended configuration for non-browser clients
 impersonate-proxy --cffi-defaults --strip-client-leak-headers
 ```
 
